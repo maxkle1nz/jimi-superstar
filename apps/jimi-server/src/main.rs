@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 mod provider_adapter;
@@ -38,6 +39,7 @@ struct AppState {
     distiller_tx: mpsc::UnboundedSender<String>,
     distiller_status: Arc<Mutex<TranscriptDistillerStatus>>,
     distiller_pending: Arc<Mutex<BTreeSet<String>>>,
+    autonomy_status: Arc<Mutex<AutonomyStatus>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -47,6 +49,27 @@ struct TranscriptDistillerStatus {
     processed: u64,
     failed: u64,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AutonomyStatus {
+    enabled: bool,
+    running: bool,
+    cycles: u64,
+    completed_dispatches: u64,
+    last_error: Option<String>,
+}
+
+impl Default for AutonomyStatus {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            running: false,
+            cycles: 0,
+            completed_dispatches: 0,
+            last_error: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -137,6 +160,20 @@ struct SecurityStatusResponse {
     skill_packs: usize,
     artifacts_total: usize,
     artifact_seal_levels: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AutonomyStatusResponse {
+    enabled: bool,
+    running: bool,
+    cycles: u64,
+    completed_dispatches: u64,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetAutonomyRequest {
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +285,7 @@ async fn main() {
     let (distiller_tx, distiller_rx) = mpsc::unbounded_channel();
     let distiller_status_state = Arc::new(Mutex::new(TranscriptDistillerStatus::default()));
     let distiller_pending = Arc::new(Mutex::new(BTreeSet::new()));
+    let autonomy_status_state = Arc::new(Mutex::new(AutonomyStatus::default()));
 
     let state = AppState {
         runtime: Arc::new(Mutex::new(runtime)),
@@ -257,9 +295,11 @@ async fn main() {
         distiller_tx,
         distiller_status: distiller_status_state.clone(),
         distiller_pending: distiller_pending.clone(),
+        autonomy_status: autonomy_status_state.clone(),
     };
 
     spawn_transcript_distiller(state.clone(), distiller_rx);
+    spawn_autonomy_loop(state.clone());
 
     let app = Router::new()
         .route("/", get(cockpit))
@@ -296,6 +336,8 @@ async fn main() {
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
         .route("/status/distiller", get(distiller_status))
+        .route("/status/autonomy", get(autonomy_status))
+        .route("/autonomy", post(set_autonomy))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
@@ -1087,6 +1129,13 @@ async fn execute_latest_dispatch(
 async fn execute_latest_dispatch_live(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<DispatchExecutionResponse>), (StatusCode, String)> {
+    let result = run_latest_dispatch_live_once(&state).await?;
+    Ok((StatusCode::CREATED, Json(result)))
+}
+
+async fn run_latest_dispatch_live_once(
+    state: &AppState,
+) -> Result<DispatchExecutionResponse, (StatusCode, String)> {
     let (dispatch, provider_lane, provider_prompt, house_root) = {
         let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
 
@@ -1248,14 +1297,11 @@ async fn execute_latest_dispatch_live(
     }
     enqueue_transcript_distillation(&state, &completed_turn.session_id);
 
-    Ok((
-        StatusCode::CREATED,
-        Json(DispatchExecutionResponse {
-            dispatch: completed_dispatch,
-            turn: completed_turn,
-            output_text,
-        }),
-    ))
+    Ok(DispatchExecutionResponse {
+        dispatch: completed_dispatch,
+        turn: completed_turn,
+        output_text,
+    })
 }
 
 async fn list_mandalas(State(state): State<AppState>) -> Json<Vec<MandalaManifest>> {
@@ -1393,6 +1439,36 @@ async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatus
         failed: status.failed,
         last_error: status.last_error,
     })
+}
+
+async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusResponse> {
+    let status = state
+        .autonomy_status
+        .lock()
+        .expect("autonomy status lock poisoned")
+        .clone();
+    Json(AutonomyStatusResponse {
+        enabled: status.enabled,
+        running: status.running,
+        cycles: status.cycles,
+        completed_dispatches: status.completed_dispatches,
+        last_error: status.last_error,
+    })
+}
+
+async fn set_autonomy(
+    State(state): State<AppState>,
+    Json(request): Json<SetAutonomyRequest>,
+) -> Result<Json<AutonomyStatusResponse>, (StatusCode, String)> {
+    let mut status = state.autonomy_status.lock().map_err(internal_lock_error)?;
+    status.enabled = request.enabled;
+    Ok(Json(AutonomyStatusResponse {
+        enabled: status.enabled,
+        running: status.running,
+        cycles: status.cycles,
+        completed_dispatches: status.completed_dispatches,
+        last_error: status.last_error.clone(),
+    }))
 }
 
 async fn security_status(State(state): State<AppState>) -> Json<SecurityStatusResponse> {
@@ -1539,6 +1615,13 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
                 summary: "policy baseline live, approvals and hardening ahead",
                 steps_remaining: 7,
             },
+            MacroAxisStatus {
+                label: "AUTONOMY",
+                percent: 58,
+                phase: "self-propelled",
+                summary: "background house loop is online, mission autonomy still evolving",
+                steps_remaining: 6,
+            },
         ],
         done: vec![
             "grounded constitutional spec stack",
@@ -1552,10 +1635,11 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             "turning memory orchestration into a first-class runtime discipline",
             "improving macro visibility for chat and cockpit",
             "tightening the provider lane around sovereign context packets",
+            "turning explicit operator continuation into house autonomy",
         ],
         next: vec![
             "add adapter trait and a second adapter shape",
-            "surface security and policy controls in the cockpit",
+            "deepen autonomy from baseline loop into mission-aware execution",
             "add decision and promise memory capsules",
         ],
         later: vec![
@@ -1659,6 +1743,12 @@ fn build_control_plane_status(inventory: &HouseInventory) -> ControlPlaneRespons
                 },
                 priority: "medium",
                 summary: "policy baseline, sealing posture, and capability counts are now visible; approvals still need a dedicated surface",
+            },
+            ControlPlaneSection {
+                label: "Autonomy Surface",
+                status: "partial",
+                priority: "high",
+                summary: "background autonomy loop is online; mission-aware execution and deeper guardrails are next",
             },
             ControlPlaneSection {
                 label: "Workflow Composer",
@@ -1982,6 +2072,45 @@ fn enqueue_transcript_distillation(state: &AppState, session_id: &jimi_kernel::S
     }
 
     let _ = state.distiller_tx.send(session_id.0.clone());
+}
+
+fn spawn_autonomy_loop(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            let enabled = match state.autonomy_status.lock() {
+                Ok(status) => status.enabled && !status.running,
+                Err(_) => false,
+            };
+            if !enabled {
+                continue;
+            }
+
+            if let Ok(mut status) = state.autonomy_status.lock() {
+                status.running = true;
+                status.cycles += 1;
+            }
+
+            let outcome = run_latest_dispatch_live_once(&state).await;
+            if let Ok(mut status) = state.autonomy_status.lock() {
+                status.running = false;
+                match outcome {
+                    Ok(_) => {
+                        status.completed_dispatches += 1;
+                        status.last_error = None;
+                    }
+                    Err((code, message)) => {
+                        if code != StatusCode::BAD_REQUEST
+                            || !message.contains("no queued dispatches available")
+                        {
+                            status.last_error = Some(message);
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn spawn_transcript_distiller(state: AppState, mut rx: mpsc::UnboundedReceiver<String>) {
@@ -2592,6 +2721,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Autonomy Surface</h2>
+            <div class="small">House self-propulsion after the mission is defined.</div>
+            <div class="action-row">
+              <button id="toggle-autonomy">Toggle Autonomy</button>
+              <div class="small" id="autonomy-status-line">awaiting autonomy state</div>
+            </div>
+            <div class="list" id="autonomy-status-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <form class="session-form" id="memory-search-form">
@@ -2671,6 +2810,9 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const controlPlaneViewEl = document.getElementById('control-plane-view');
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const securityStatusViewEl = document.getElementById('security-status-view');
+      const autonomyStatusViewEl = document.getElementById('autonomy-status-view');
+      const autonomyStatusLineEl = document.getElementById('autonomy-status-line');
+      const toggleAutonomyEl = document.getElementById('toggle-autonomy');
       const memoryPolicyFormEl = document.getElementById('memory-policy-form');
       const hotLimitEl = document.getElementById('hot-limit');
       const relevantLimitEl = document.getElementById('relevant-limit');
@@ -2699,6 +2841,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         controlPlane: null,
         distillerStatus: null,
         securityStatus: null,
+        autonomyStatus: null,
         memorySearch: null
       };
 
@@ -2830,6 +2973,25 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">sacred shards: ${escapeHtml(security.sacred_shards)}</div>
             <div class="meta">sealed artifacts: ${escapeHtml(security.artifacts_total)}</div>
             <div class="meta">artifact levels: ${escapeHtml((security.artifact_seal_levels || []).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderAutonomyStatus() {
+        if (!state.autonomyStatus) {
+          autonomyStatusViewEl.innerHTML = '<div class="empty">Autonomy surface not loaded yet.</div>';
+          return;
+        }
+        const autonomy = state.autonomyStatus;
+        autonomyStatusLineEl.textContent = autonomy.enabled ? 'autonomy enabled' : 'autonomy paused';
+        autonomyStatusViewEl.innerHTML = `
+          <div class="card">
+            <strong>Autonomy Loop</strong>
+            <div class="meta">enabled: ${escapeHtml(autonomy.enabled ? 'yes' : 'no')}</div>
+            <div class="meta">running: ${escapeHtml(autonomy.running ? 'yes' : 'no')}</div>
+            <div class="meta">cycles: ${escapeHtml(autonomy.cycles)}</div>
+            <div class="meta">completed dispatches: ${escapeHtml(autonomy.completed_dispatches)}</div>
+            <div class="meta">last error: ${escapeHtml(autonomy.last_error || 'none')}</div>
           </div>
         `;
       }
@@ -3187,6 +3349,26 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSecurityStatus();
       }
 
+      async function refreshAutonomyStatus() {
+        const res = await fetch('/status/autonomy');
+        state.autonomyStatus = await res.json();
+        renderAutonomyStatus();
+      }
+
+      async function toggleAutonomy() {
+        const enabled = !(state.autonomyStatus?.enabled ?? true);
+        const res = await fetch('/autonomy', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        if (!res.ok) {
+          throw new Error('failed to update autonomy state');
+        }
+        state.autonomyStatus = await res.json();
+        renderAutonomyStatus();
+      }
+
       async function searchMemory() {
         const query = memorySearchQueryEl.value.trim();
         const scope = memorySearchScopeEl.value;
@@ -3228,6 +3410,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMacroStatus(),
           refreshControlPlane(),
           refreshSecurityStatus(),
+          refreshAutonomyStatus(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -3331,7 +3514,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSecurityStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -3360,6 +3543,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshAutonomyStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -3384,6 +3568,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshAutonomyStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -3408,6 +3593,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshAutonomyStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -3433,6 +3619,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshAutonomyStatus(),
           refreshMandalas(),
           refreshCapsules(),
           refreshSlots(),
@@ -3449,7 +3636,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -3461,7 +3648,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -3482,6 +3669,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
@@ -3489,6 +3677,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
@@ -3500,6 +3689,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -3512,6 +3702,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
@@ -3521,6 +3712,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'artifact_created') {
@@ -3529,6 +3721,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
             } else if (event.event_type === 'engine_selected') {
               refreshInventory().catch(console.error);
@@ -3536,6 +3729,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshProviders().catch(console.error);
               refreshDispatches().catch(console.error);
             } else if (event.event_type === 'truth_fusion_updated') {
@@ -3544,6 +3738,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshContextPacket().catch(console.error);
             }
@@ -3651,6 +3846,15 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
       });
 
+      toggleAutonomyEl.addEventListener('click', async () => {
+        try {
+          await toggleAutonomy();
+        } catch (error) {
+          console.error(error);
+          autonomyStatusLineEl.textContent = error.message;
+        }
+      });
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replaceAll('&', '&amp;')
@@ -3668,6 +3872,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshControlPlane(),
         refreshDistillerStatus(),
         refreshSecurityStatus(),
+        refreshAutonomyStatus(),
         refreshSessions(),
         refreshTurns(),
         refreshDispatches(),
