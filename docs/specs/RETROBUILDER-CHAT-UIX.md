@@ -40,6 +40,8 @@ Every meaningful progress update should use this general shape:
 4. active slice status
 5. next move
 
+When the run changes architectural direction, the update should also include a visible `STEERING` block.
+
 ## House Badge
 
 Recommended prefix:
@@ -204,6 +206,26 @@ FOCUS
 - marketplace-capable capsule runtime
 ```
 
+### 4. Steering Update
+
+Use when the house changes plan during a live run.
+
+```text
+⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟  o_o
+
+RETROBUILDER  [████████░░] 84%  R4 live loops materializing
+L1GHT         [████████░░] 82%  L4 live surfaces
+
+STEERING
+- new architectural truth was discovered mid-run
+- the house is updating the integration plan without dropping continuity
+
+IMPACT
+- specs updated
+- next implementation slice adjusted
+- prior work preserved
+```
+
 ## Required Final Closeout Footer
 
 At the end of meaningful implementation updates, include:
@@ -260,6 +282,7 @@ COCKPIT       [████████░░] 80%
 - avoid sounding like CI logs
 - never hide real uncertainty
 - when blocked, show the block clearly instead of sounding cheerful by force
+- when steering happens mid-run, say so explicitly instead of burying the change
 
 ## Relationship To L1GHT
 

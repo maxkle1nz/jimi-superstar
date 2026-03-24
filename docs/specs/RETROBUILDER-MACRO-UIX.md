@@ -25,6 +25,7 @@ Every macro projection should include:
 - subsystem bars
 - done / doing / next / later
 - menu of callable questions
+- steering note when the architecture changed during the run
 
 ## Macro Footer Rule
 
@@ -96,6 +97,12 @@ The macro surface may be derived from:
 - subsystem heuristics
 
 It must not pretend false precision when the project is still moving.
+
+It should also reveal when:
+
+- a donor system changed the plan
+- a mid-run steering decision reoriented the build
+- integration became easier because the system was re-grounded instead of forced
 
 ## Precision Rule
 
