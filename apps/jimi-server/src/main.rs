@@ -5,18 +5,23 @@ use std::{
 };
 
 use axum::{
-    extract::State,
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     http::StatusCode,
     routing::get,
     Json, Router,
 };
 use jimi_kernel::{DurableStore, EventEnvelope, HouseInventory, HouseRuntime, SessionRecord};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 #[derive(Clone)]
 struct AppState {
     runtime: Arc<Mutex<HouseRuntime>>,
     store: Arc<Mutex<DurableStore>>,
+    events_tx: broadcast::Sender<EventEnvelope>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,12 +57,14 @@ async fn main() {
     let state = AppState {
         runtime: Arc::new(Mutex::new(runtime)),
         store: Arc::new(Mutex::new(store)),
+        events_tx: broadcast::channel(256).0,
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/sessions", get(list_sessions).post(create_session))
         .route("/events", get(list_events))
+        .route("/ws/events", get(ws_events))
         .route("/inventory", get(inventory))
         .with_state(state);
 
@@ -101,7 +108,12 @@ async fn create_session(
 ) -> Result<(StatusCode, Json<SessionRecord>), (StatusCode, String)> {
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let session = runtime.bootstrap_session(request.title);
+    let new_event = runtime.events.all().last().cloned();
     persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
     Ok((StatusCode::CREATED, Json(session)))
 }
 
@@ -129,6 +141,13 @@ async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
     })
 }
 
+async fn ws_events(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws_events(socket, state))
+}
+
 fn persist_runtime(
     state: &AppState,
     runtime: &HouseRuntime,
@@ -144,4 +163,32 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "internal state lock poisoned".into(),
     )
+}
+
+async fn handle_ws_events(mut socket: WebSocket, state: AppState) {
+    let snapshot = {
+        let runtime = match state.runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+        runtime.events.all().to_vec()
+    };
+
+    for event in snapshot {
+        if send_event(&mut socket, &event).await.is_err() {
+            return;
+        }
+    }
+
+    let mut rx = state.events_tx.subscribe();
+    while let Ok(event) = rx.recv().await {
+        if send_event(&mut socket, &event).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn send_event(socket: &mut WebSocket, event: &EventEnvelope) -> Result<(), ()> {
+    let payload = serde_json::to_string(event).map_err(|_| ())?;
+    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
 }
