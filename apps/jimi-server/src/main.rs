@@ -1929,6 +1929,7 @@ fn distill_session_transcript(
         .cloned();
 
     let mut distilled_capsules = 1;
+    let mut distilled_kinds = vec!["conversation/transcript".to_string()];
     runtime.memory_capsules.append(
         session_id.clone(),
         session.room_id.clone(),
@@ -1943,8 +1944,37 @@ fn distill_session_transcript(
         "warm",
     );
 
+    if recent_capsules.len() >= 2 {
+        let episode_summary = recent_capsules
+            .iter()
+            .map(|capsule| {
+                capsule
+                    .intent_summary
+                    .clone()
+                    .unwrap_or_else(|| capsule.content.clone())
+            })
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        distilled_capsules += 1;
+        distilled_kinds.push("conversation/episode".into());
+        runtime.memory_capsules.append(
+            session_id.clone(),
+            session.room_id.clone(),
+            latest_turn.lane_id.clone(),
+            Some(latest_turn.turn_id.clone()),
+            "distiller",
+            format!("Episode arc: {}", episode_summary),
+            Some("conversation/episode".into()),
+            0.8,
+            0.85,
+            "session_open",
+            "warm",
+        );
+    }
+
     if let Some(operator_capsule) = latest_operator {
         distilled_capsules += 1;
+        distilled_kinds.push("conversation/directive".into());
         runtime.memory_capsules.append(
             session_id.clone(),
             session.room_id.clone(),
@@ -1977,7 +2007,7 @@ fn distill_session_transcript(
         serde_json::json!({
             "distilled_capsules": distilled_capsules,
             "room_id": session.room_id,
-            "kinds": ["conversation/transcript", "conversation/directive"],
+            "kinds": distilled_kinds,
         }),
     );
     let new_event = runtime.events.all().last().cloned();
