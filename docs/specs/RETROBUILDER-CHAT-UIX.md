@@ -206,7 +206,12 @@ FOCUS
 
 ## Required Final Closeout Footer
 
-At the end of meaningful implementation updates, include a compact footer:
+At the end of meaningful implementation updates, include:
+
+- a compact micro footer
+- a compact macro footer
+
+Micro footer:
 
 ```text
 STATUS NOW
@@ -214,6 +219,16 @@ STATUS NOW
 - L1GHT: L4
 - validation: green
 - next frontier: provider response compaction
+```
+
+Macro footer:
+
+```text
+MACRO NOW
+- project: operational core
+- done: sovereign runtime, memory, cockpit, live codex lane
+- doing: memory orchestration and macro visibility
+- next: provider adapters, marketplace, stronger policy surfaces
 ```
 
 ## Slice Bars

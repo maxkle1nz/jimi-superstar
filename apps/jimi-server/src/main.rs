@@ -60,6 +60,33 @@ struct InventoryResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct MacroAxisStatus {
+    label: &'static str,
+    percent: u8,
+    phase: &'static str,
+    summary: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct MacroMenuItem {
+    key: &'static str,
+    prompt: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct MacroStatusResponse {
+    retrobuilder: MacroAxisStatus,
+    l1ght: MacroAxisStatus,
+    project: MacroAxisStatus,
+    subsystems: Vec<MacroAxisStatus>,
+    done: Vec<&'static str>,
+    doing: Vec<&'static str>,
+    next: Vec<&'static str>,
+    later: Vec<&'static str>,
+    menu: Vec<MacroMenuItem>,
+}
+
+#[derive(Debug, Serialize)]
 struct CapsuleBootstrapResponse {
     mandala_id: String,
     capsule_id: String,
@@ -167,6 +194,7 @@ async fn main() {
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
         .route("/providers", get(list_providers))
+        .route("/status/macro", get(macro_status))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
@@ -1045,6 +1073,157 @@ async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
     })
 }
 
+async fn macro_status(State(state): State<AppState>) -> Json<MacroStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(build_macro_status(&runtime.inventory()))
+}
+
+fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
+    let runtime_percent = if inventory.sessions > 0 && inventory.events > 0 {
+        82
+    } else {
+        36
+    };
+    let memory_percent = if inventory.memory_capsules > 0 && inventory.summary_checkpoints > 0 {
+        84
+    } else {
+        32
+    };
+    let cockpit_percent = if inventory.events > 0 && inventory.turn_dispatches > 0 {
+        85
+    } else {
+        40
+    };
+    let providers_percent = if inventory.provider_lanes > 0 { 68 } else { 24 };
+    let capsules_percent = if inventory.capsules > 0 && inventory.slots > 0 {
+        88
+    } else {
+        28
+    };
+
+    MacroStatusResponse {
+        retrobuilder: MacroAxisStatus {
+            label: "RETROBUILDER",
+            percent: 87,
+            phase: "R4",
+            summary: "live loops materializing",
+        },
+        l1ght: MacroAxisStatus {
+            label: "L1GHT",
+            percent: 85,
+            phase: "L4",
+            summary: "live surfaces",
+        },
+        project: MacroAxisStatus {
+            label: "PROJECT",
+            percent: 78,
+            phase: "operational core",
+            summary: "sovereign house online, ecosystem ahead",
+        },
+        subsystems: vec![
+            MacroAxisStatus {
+                label: "RUNTIME",
+                percent: runtime_percent,
+                phase: "core",
+                summary: "session, dispatch, persistence",
+            },
+            MacroAxisStatus {
+                label: "MEMORY",
+                percent: memory_percent,
+                phase: "capsule",
+                summary: "capture, summaries, compaction",
+            },
+            MacroAxisStatus {
+                label: "COCKPIT",
+                percent: cockpit_percent,
+                phase: "surface",
+                summary: "inventory, memory, pulse",
+            },
+            MacroAxisStatus {
+                label: "PROVIDERS",
+                percent: providers_percent,
+                phase: "lane",
+                summary: "codex live lane online",
+            },
+            MacroAxisStatus {
+                label: "CAPSULES",
+                percent: capsules_percent,
+                phase: "house identity",
+                summary: "mandala, slot, fieldvault",
+            },
+            MacroAxisStatus {
+                label: "MARKETPLACE",
+                percent: 18,
+                phase: "future",
+                summary: "capsule marketplace not started",
+            },
+            MacroAxisStatus {
+                label: "SECURITY",
+                percent: 34,
+                phase: "baseline",
+                summary: "policy model present, hardening ahead",
+            },
+        ],
+        done: vec![
+            "grounded constitutional spec stack",
+            "sovereign runtime core with durable sqlite memory",
+            "live cockpit with event pulse and inventory",
+            "mandala capsules, slots, and fieldvault artifacts",
+            "provider lane, dispatch flow, and live codex execution",
+            "capsule memory with summaries, bridges, promotions, and compaction",
+        ],
+        doing: vec![
+            "turning memory orchestration into a first-class runtime discipline",
+            "improving macro visibility for chat and cockpit",
+            "tightening the provider lane around sovereign context packets",
+        ],
+        next: vec![
+            "extract provider adapter layer beyond inline codex execution",
+            "tune memory query and compaction with stronger heuristics",
+            "add project-wide macro projection footer to every milestone path",
+        ],
+        later: vec![
+            "multi-engine adapters",
+            "capsule marketplace and personality slots for external creators",
+            "deeper security and policy enforcement surfaces",
+        ],
+        menu: vec![
+            MacroMenuItem {
+                key: "1",
+                prompt: "what was completed",
+            },
+            MacroMenuItem {
+                key: "2",
+                prompt: "what is being built now",
+            },
+            MacroMenuItem {
+                key: "3",
+                prompt: "what remains",
+            },
+            MacroMenuItem {
+                key: "4",
+                prompt: "show full panorama",
+            },
+            MacroMenuItem {
+                key: "5",
+                prompt: "show subsystem status",
+            },
+            MacroMenuItem {
+                key: "6",
+                prompt: "show latest milestones",
+            },
+            MacroMenuItem {
+                key: "7",
+                prompt: "show risks and blocks",
+            },
+            MacroMenuItem {
+                key: "8",
+                prompt: "show recommended next step",
+            },
+        ],
+    }
+}
+
 async fn bootstrap_core_capsule(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<CapsuleBootstrapResponse>), (StatusCode, String)> {
@@ -1708,6 +1887,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Macro Status</h2>
+            <div class="small">Panoramic RETROBUILDER and L1GHT view for the whole project.</div>
+            <div class="list" id="macro-status-view"></div>
+            <div class="list" id="macro-menu-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <div class="list" id="memory-capsule-list"></div>
@@ -1762,6 +1948,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const triggerListEl = document.getElementById('trigger-list');
       const promotionListEl = document.getElementById('promotion-list');
       const contextPacketViewEl = document.getElementById('context-packet-view');
+      const macroStatusViewEl = document.getElementById('macro-status-view');
+      const macroMenuViewEl = document.getElementById('macro-menu-view');
 
       const state = {
         sessions: [],
@@ -1778,7 +1966,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         capsules: [],
         slots: [],
         artifacts: [],
-        providers: []
+        providers: [],
+        macroStatus: null
       };
 
       function renderInventory(data) {
@@ -1801,6 +1990,50 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="stat">
             <div class="value">${value}</div>
             <div class="label">${label}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderBar(percent) {
+        const filled = Math.max(0, Math.min(10, Math.round((percent || 0) / 10)));
+        return '[' + '█'.repeat(filled) + '░'.repeat(10 - filled) + ']';
+      }
+
+      function renderMacroStatus() {
+        if (!state.macroStatus) {
+          macroStatusViewEl.innerHTML = '<div class="empty">Macro panorama not loaded yet.</div>';
+          macroMenuViewEl.innerHTML = '<div class="empty">Macro menu not loaded yet.</div>';
+          return;
+        }
+        const macro = state.macroStatus;
+        const axes = [macro.retrobuilder, macro.l1ght, macro.project, ...(macro.subsystems || [])];
+        macroStatusViewEl.innerHTML = axes.map(axis => `
+          <div class="card">
+            <strong>${escapeHtml(axis.label)}</strong>
+            <div class="meta">${escapeHtml(renderBar(axis.percent))} ${escapeHtml(axis.percent)}%</div>
+            <div class="meta">${escapeHtml(axis.phase)} / ${escapeHtml(axis.summary)}</div>
+          </div>
+        `).join('') + `
+          <div class="card">
+            <strong>Done</strong>
+            ${(macro.done || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+          <div class="card">
+            <strong>Doing</strong>
+            ${(macro.doing || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+          <div class="card">
+            <strong>Next</strong>
+            ${(macro.next || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+          <div class="card">
+            <strong>Later</strong>
+            ${(macro.later || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+        `;
+        macroMenuViewEl.innerHTML = (macro.menu || []).map(item => `
+          <div class="card">
+            <strong>[${escapeHtml(item.key)}] ${escapeHtml(item.prompt)}</strong>
           </div>
         `).join('');
       }
@@ -2067,6 +2300,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderInventory(data);
       }
 
+      async function refreshMacroStatus() {
+        const res = await fetch('/status/macro');
+        state.macroStatus = await res.json();
+        renderMacroStatus();
+      }
+
       async function refreshSessions() {
         const res = await fetch('/sessions');
         state.sessions = await res.json();
@@ -2165,7 +2404,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -2190,6 +2429,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         turnStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.intent_mode}`;
         await Promise.all([
           refreshInventory(),
+          refreshMacroStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -2210,6 +2450,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         executeStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.state}`;
         await Promise.all([
           refreshInventory(),
+          refreshMacroStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -2251,6 +2492,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         bootstrapStatusEl.textContent = `${result.slot_id} -> ${result.slot_state}`;
         await Promise.all([
           refreshInventory(),
+          refreshMacroStatus(),
           refreshMandalas(),
           refreshCapsules(),
           refreshSlots(),
@@ -2267,7 +2509,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -2279,7 +2521,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -2296,9 +2538,11 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             if (event.event_type === 'session_created') {
               refreshSessions().catch(console.error);
               refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
@@ -2306,6 +2550,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
               refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -2314,14 +2559,17 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshContextPacket().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
             } else if (event.event_type === 'artifact_created') {
               refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
             } else if (event.event_type === 'engine_selected') {
               refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
               refreshProviders().catch(console.error);
               refreshDispatches().catch(console.error);
             }
@@ -2420,6 +2668,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
 
       Promise.all([
         refreshInventory(),
+        refreshMacroStatus(),
         refreshSessions(),
         refreshTurns(),
         refreshDispatches(),
