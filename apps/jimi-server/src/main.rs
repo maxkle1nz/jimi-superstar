@@ -395,6 +395,13 @@ async fn context_packet(
 ) -> Result<Json<ContextPacketResponse>, (StatusCode, String)> {
     let runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let session_id = jimi_kernel::SessionId(session_id);
+    Ok(Json(assemble_context_packet(&runtime, &session_id)))
+}
+
+fn assemble_context_packet(
+    runtime: &HouseRuntime,
+    session_id: &jimi_kernel::SessionId,
+) -> ContextPacketResponse {
     let memory_policy = runtime.active_memory_policy().unwrap_or_default();
     let active_mandala_id = runtime
         .slots
@@ -404,7 +411,7 @@ async fn context_packet(
 
     let hot_capsules: Vec<MemoryCapsuleRecord> = runtime
         .memory_capsules
-        .by_session(&session_id)
+        .by_session(session_id)
         .into_iter()
         .rev()
         .take(memory_policy.hot_context_limit.max(1))
@@ -445,14 +452,14 @@ async fn context_packet(
         .unwrap_or_default();
 
     let relevant_capsules = runtime.query_memory(
-        &session_id,
+        session_id,
         &query_seed,
         memory_policy.relevant_context_limit.max(1),
     );
 
     let summary_checkpoints = runtime
         .summary_checkpoints
-        .by_session(&session_id)
+        .by_session(session_id)
         .into_iter()
         .rev()
         .take(3)
@@ -464,7 +471,7 @@ async fn context_packet(
 
     let memory_bridges = runtime
         .memory_bridges
-        .by_session(&session_id)
+        .by_session(session_id)
         .into_iter()
         .rev()
         .take(5)
@@ -476,7 +483,7 @@ async fn context_packet(
 
     let resynthesis_triggers = runtime
         .resynthesis_triggers
-        .by_session(&session_id)
+        .by_session(session_id)
         .into_iter()
         .rev()
         .take(3)
@@ -488,7 +495,7 @@ async fn context_packet(
 
     let memory_promotions = runtime
         .memory_promotions
-        .by_session(&session_id)
+        .by_session(session_id)
         .into_iter()
         .rev()
         .take(5)
@@ -505,8 +512,8 @@ async fn context_packet(
         .map(|provider| format!("{}:{}", provider.provider, provider.model))
         .collect();
 
-    Ok(Json(ContextPacketResponse {
-        session_id: session_id.0,
+    ContextPacketResponse {
+        session_id: session_id.0.clone(),
         active_mandala_id,
         memory_policy,
         hot_capsules,
@@ -519,7 +526,136 @@ async fn context_packet(
         active_snapshot,
         query_seed,
         providers,
-    }))
+    }
+}
+
+fn build_provider_prompt(
+    provider_lane_id: &str,
+    packet: &ContextPacketResponse,
+    intent_summary: &str,
+) -> String {
+    let hot_context = packet
+        .hot_capsules
+        .iter()
+        .map(|capsule| format!("- [{}:{}] {}", capsule.role, capsule.band, capsule.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let relevant_context = packet
+        .relevant_capsules
+        .iter()
+        .map(|capsule| format!("- score={:.2} {}", capsule.relevance_score, capsule.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let summaries = packet
+        .summary_checkpoints
+        .iter()
+        .map(|summary| format!("- [{}] {}", summary.source_band, summary.semantic_digest))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stable_rules = packet
+        .stable_memory
+        .as_ref()
+        .map(|memory| {
+            memory
+                .learned_rules
+                .iter()
+                .take(6)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        .join(" | ");
+    let blockers = packet
+        .active_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.blockers.join(" | "))
+        .unwrap_or_default();
+    let next_actions = packet
+        .active_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.next_actions.join(" | "))
+        .unwrap_or_default();
+
+    format!(
+        concat!(
+            "You are the live provider lane for JIMI SUPERSTAR.\n",
+            "Respond briefly, concretely, and act as a sovereign house lane.\n\n",
+            "Lane: {provider_lane_id}\n",
+            "Session: {session_id}\n",
+            "Active mandala: {active_mandala}\n",
+            "Intent: {intent_summary}\n",
+            "Query seed: {query_seed}\n",
+            "Boot include: {boot_include}\n",
+            "Lookup sources: {lookup_sources}\n",
+            "Stable promotion: {stable_promotion}\n",
+            "FieldVault sealing: {fieldvault_sealing}\n",
+            "Promotion threshold: {promotion_threshold:.2}\n\n",
+            "Goal: {goal}\n",
+            "Blockers: {blockers}\n",
+            "Next actions: {next_actions}\n",
+            "Stable rules: {stable_rules}\n\n",
+            "Hot capsules:\n{hot_context}\n\n",
+            "Relevant memory:\n{relevant_context}\n\n",
+            "Summaries:\n{summaries}\n\n",
+            "Return only the answer for this turn. Do not explain the packet."
+        ),
+        provider_lane_id = provider_lane_id,
+        session_id = packet.session_id,
+        active_mandala = packet
+            .active_mandala_id
+            .clone()
+            .unwrap_or_else(|| "none".into()),
+        intent_summary = intent_summary,
+        query_seed = packet.query_seed,
+        boot_include = packet.memory_policy.boot_include.join(", "),
+        lookup_sources = packet.memory_policy.lookup_sources.join(", "),
+        stable_promotion = if packet.memory_policy.promote_to_stable_memory {
+            "on"
+        } else {
+            "off"
+        },
+        fieldvault_sealing = if packet.memory_policy.allow_fieldvault_sealing {
+            "on"
+        } else {
+            "off"
+        },
+        promotion_threshold = packet.memory_policy.promotion_confidence_threshold,
+        goal = packet
+            .active_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.current_goal.clone())
+            .unwrap_or_else(|| "none".into()),
+        blockers = if blockers.is_empty() {
+            "none".into()
+        } else {
+            blockers
+        },
+        next_actions = if next_actions.is_empty() {
+            "none".into()
+        } else {
+            next_actions
+        },
+        stable_rules = if stable_rules.is_empty() {
+            "none".into()
+        } else {
+            stable_rules
+        },
+        hot_context = if hot_context.is_empty() {
+            "- none".into()
+        } else {
+            hot_context
+        },
+        relevant_context = if relevant_context.is_empty() {
+            "- none".into()
+        } else {
+            relevant_context
+        },
+        summaries = if summaries.is_empty() {
+            "- none".into()
+        } else {
+            summaries
+        },
+    )
 }
 
 async fn query_memory(
@@ -652,7 +788,7 @@ async fn execute_latest_dispatch(
 async fn execute_latest_dispatch_live(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<DispatchExecutionResponse>), (StatusCode, String)> {
-    let (dispatch, provider_lane_id, house_root) = {
+    let (dispatch, provider_lane_id, provider_prompt, house_root) = {
         let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
 
         let latest_dispatch = runtime
@@ -696,7 +832,15 @@ async fn execute_latest_dispatch_live(
                 "provider_lane_id": running_dispatch.provider_lane_id.clone(),
                 "status": "running",
                 "mode": "live_codex",
+                "context_packet_ready": true,
             }),
+        );
+
+        let packet = assemble_context_packet(&runtime, &running_dispatch.session_id);
+        let provider_prompt = build_provider_prompt(
+            &running_dispatch.provider_lane_id,
+            &packet,
+            &running_dispatch.intent_summary,
         );
 
         let new_event = runtime.events.all().last().cloned();
@@ -710,13 +854,13 @@ async fn execute_latest_dispatch_live(
         (
             running_dispatch.clone(),
             running_dispatch.provider_lane_id.clone(),
+            provider_prompt,
             state.house_root.clone(),
         )
     };
 
-    let live_intent_summary = dispatch.intent_summary.clone();
     let output_text =
-        tokio::task::spawn_blocking(move || run_codex_exec(&house_root, &live_intent_summary))
+        tokio::task::spawn_blocking(move || run_codex_exec(&house_root, &provider_prompt))
             .await
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
             .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
@@ -1090,13 +1234,9 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
     )
 }
 
-fn run_codex_exec(house_root: &PathBuf, intent_summary: &str) -> Result<String, String> {
+fn run_codex_exec(house_root: &PathBuf, provider_prompt: &str) -> Result<String, String> {
     let output_path =
         std::env::temp_dir().join(format!("jimi-codex-output-{}.txt", uuid::Uuid::now_v7()));
-    let prompt = format!(
-        "You are the live provider lane for JIMI SUPERSTAR. Respond briefly and concretely to this routed turn: {}",
-        intent_summary
-    );
 
     let status = Command::new("codex")
         .arg("exec")
@@ -1109,7 +1249,7 @@ fn run_codex_exec(house_root: &PathBuf, intent_summary: &str) -> Result<String, 
         .arg(&output_path)
         .arg("--cd")
         .arg(house_root)
-        .arg(prompt)
+        .arg(provider_prompt)
         .status()
         .map_err(|error| error.to_string())?;
 
