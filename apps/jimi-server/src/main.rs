@@ -88,6 +88,13 @@ struct TurnBootstrapResponse {
     dispatch: TurnDispatchRecord,
 }
 
+#[derive(Debug, Serialize)]
+struct DispatchExecutionResponse {
+    dispatch: TurnDispatchRecord,
+    turn: TurnRecord,
+    output_text: String,
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("JIMI_DB_PATH")
@@ -112,6 +119,7 @@ async fn main() {
         .route("/sessions", get(list_sessions).post(create_session))
         .route("/turns", get(list_turns).post(create_turn))
         .route("/dispatches", get(list_dispatches))
+        .route("/dispatches/execute-latest", post(execute_latest_dispatch))
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
@@ -282,6 +290,102 @@ async fn list_turns(State(state): State<AppState>) -> Json<Vec<TurnRecord>> {
 async fn list_dispatches(State(state): State<AppState>) -> Json<Vec<TurnDispatchRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.dispatches.all().into_iter().cloned().collect())
+}
+
+async fn execute_latest_dispatch(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<DispatchExecutionResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+    let latest_dispatch = runtime
+        .dispatches
+        .all()
+        .into_iter()
+        .rev()
+        .find(|dispatch| dispatch.status == "queued")
+        .cloned()
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "no queued dispatches available".to_string()))?;
+
+    let running_dispatch = runtime
+        .dispatches
+        .update_status(&latest_dispatch.dispatch_id, "running")
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let _running_turn = runtime
+        .sessions
+        .update_turn_state(&latest_dispatch.turn_id, jimi_kernel::TurnState::Executing)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "provider".into(),
+            actor_id: running_dispatch.provider_lane_id.clone(),
+        },
+        SubjectRef {
+            subject_type: "dispatch".into(),
+            subject_id: running_dispatch.dispatch_id.clone(),
+        },
+        EventType::ToolStarted,
+        Some(&running_dispatch.session_id),
+        Some(&running_dispatch.lane_id),
+        Some(&running_dispatch.turn_id),
+        serde_json::json!({
+            "dispatch_id": running_dispatch.dispatch_id.clone(),
+            "provider_lane_id": running_dispatch.provider_lane_id.clone(),
+            "status": "running",
+        }),
+    );
+
+    let output_text = format!(
+        "JIMI routed '{}' through {} and completed the first simulated execution loop.",
+        running_dispatch.intent_summary, running_dispatch.provider_lane_id
+    );
+
+    let completed_dispatch = runtime
+        .dispatches
+        .update_status(&running_dispatch.dispatch_id, "completed")
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let completed_turn = runtime
+        .sessions
+        .update_turn_state(&running_dispatch.turn_id, jimi_kernel::TurnState::Completed)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "provider".into(),
+            actor_id: completed_dispatch.provider_lane_id.clone(),
+        },
+        SubjectRef {
+            subject_type: "turn".into(),
+            subject_id: completed_turn.turn_id.0.clone(),
+        },
+        EventType::MessageCompleted,
+        Some(&completed_turn.session_id),
+        Some(&completed_turn.lane_id),
+        Some(&completed_turn.turn_id),
+        serde_json::json!({
+            "dispatch_id": completed_dispatch.dispatch_id.clone(),
+            "provider_lane_id": completed_dispatch.provider_lane_id.clone(),
+            "output_text": output_text.clone(),
+            "status": "completed",
+        }),
+    );
+
+    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(2).cloned().collect();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    for event in new_events.into_iter().rev() {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DispatchExecutionResponse {
+            dispatch: completed_dispatch,
+            turn: completed_turn,
+            output_text,
+        }),
+    ))
 }
 
 async fn list_mandalas(State(state): State<AppState>) -> Json<Vec<MandalaManifest>> {
@@ -912,6 +1016,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <button type="submit">Dispatch Turn</button>
             </form>
             <div class="small" id="turn-status">awaiting routed turn</div>
+            <div class="action-row">
+              <button id="execute-dispatch">Execute Latest Dispatch</button>
+              <div class="small" id="execute-status">awaiting execution</div>
+            </div>
             <div class="list" id="turn-list"></div>
             <div class="list" id="dispatch-list"></div>
           </div>
@@ -956,6 +1064,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const turnFormEl = document.getElementById('turn-form');
       const turnIntentEl = document.getElementById('turn-intent');
       const turnStatusEl = document.getElementById('turn-status');
+      const executeDispatchEl = document.getElementById('execute-dispatch');
+      const executeStatusEl = document.getElementById('execute-status');
       const turnListEl = document.getElementById('turn-list');
       const dispatchListEl = document.getElementById('dispatch-list');
       const mandalaListEl = document.getElementById('mandala-list');
@@ -1242,6 +1352,17 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
       }
 
+      async function executeLatestDispatch() {
+        executeStatusEl.textContent = 'executing latest dispatch…';
+        const res = await fetch('/dispatches/execute-latest', { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to execute latest dispatch');
+        }
+        const result = await res.json();
+        executeStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.state}`;
+        await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
+      }
+
       async function bootstrapCoreCapsule() {
         bootstrapStatusEl.textContent = 'installing core capsule…';
         const res = await fetch('/bootstrap/core-capsule', { method: 'POST' });
@@ -1301,6 +1422,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
               refreshTurns().catch(console.error);
+            } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
+              refreshInventory().catch(console.error);
+              refreshTurns().catch(console.error);
+              refreshDispatches().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
               refreshMandalas().catch(console.error);
@@ -1353,6 +1478,15 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         } catch (error) {
           console.error(error);
           turnStatusEl.textContent = error.message;
+        }
+      });
+
+      executeDispatchEl.addEventListener('click', async () => {
+        try {
+          await executeLatestDispatch();
+        } catch (error) {
+          console.error(error);
+          executeStatusEl.textContent = error.message;
         }
       });
 

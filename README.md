@@ -6,7 +6,7 @@ It is designed to host many engines, import many skill families, expose one cohe
 
 The house is now also grounded in two constitutional ideas:
 
-- `RETROBUILDER`: build backward from a fully grounded finished system
+- `RETROBUILDER`: one of the canonical work methods available inside JIMI SUPERSTAR, and the current flagship method for this build
 - `Mandala + FieldVault`: agent identity, memory, and installable capsules are first-class, not optional add-ons
 
 ## House Thesis
@@ -27,9 +27,11 @@ JIMI SUPERSTAR is:
 - a mandala-native agent substrate
 - a fieldvault-sealed capsule system
 
-## RETROBUILDER
+## Work Methods
 
-RETROBUILDER is the official build method for this repository.
+JIMI SUPERSTAR can host and express multiple work methods over time.
+
+RETROBUILDER is one canonical method of work available inside the house, and the one currently driving this system's construction.
 
 It means we define the full program in the field of ideas first:
 

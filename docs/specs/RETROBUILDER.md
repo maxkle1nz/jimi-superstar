@@ -1,6 +1,8 @@
 # RETROBUILDER
 
-RETROBUILDER is the official build method of JIMI SUPERSTAR.
+RETROBUILDER is one canonical work method of JIMI SUPERSTAR.
+
+It is also a general build doctrine that can be used beyond JIMI, but inside this house it should be treated as an explicit operational method rather than just background philosophy.
 
 ## Definition
 
@@ -27,6 +29,12 @@ That is too much surface area for improvisational scaffolding.
 4. define persistence and security
 5. scaffold the smallest sovereign center
 6. expand outward without breaking the center
+
+## Role Inside JIMI
+
+JIMI SUPERSTAR may eventually support multiple work methods, build modes, or orchestration disciplines.
+
+RETROBUILDER is the current flagship method active in this system.
 
 ## Validation
 

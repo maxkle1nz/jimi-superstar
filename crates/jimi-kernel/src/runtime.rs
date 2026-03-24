@@ -215,6 +215,19 @@ impl SessionManager {
             .ok_or_else(|| KernelError::TurnNotFound(turn_id.0.clone()))
     }
 
+    pub fn update_turn_state(
+        &mut self,
+        turn_id: &TurnId,
+        state: TurnState,
+    ) -> Result<TurnRecord, KernelError> {
+        let turn = self
+            .turns
+            .get_mut(&turn_id.0)
+            .ok_or_else(|| KernelError::TurnNotFound(turn_id.0.clone()))?;
+        turn.state = state;
+        Ok(turn.clone())
+    }
+
     pub fn sessions(&self) -> Vec<&SessionRecord> {
         self.sessions.values().collect()
     }
@@ -493,6 +506,25 @@ impl TurnDispatchRegistry {
 
     pub fn all(&self) -> Vec<&TurnDispatchRecord> {
         self.dispatches.values().collect()
+    }
+
+    pub fn get(&self, dispatch_id: &str) -> Result<&TurnDispatchRecord, KernelError> {
+        self.dispatches
+            .get(dispatch_id)
+            .ok_or_else(|| KernelError::TurnNotFound(dispatch_id.into()))
+    }
+
+    pub fn update_status(
+        &mut self,
+        dispatch_id: &str,
+        status: impl Into<String>,
+    ) -> Result<TurnDispatchRecord, KernelError> {
+        let dispatch = self
+            .dispatches
+            .get_mut(dispatch_id)
+            .ok_or_else(|| KernelError::TurnNotFound(dispatch_id.into()))?;
+        dispatch.status = status.into();
+        Ok(dispatch.clone())
     }
 
     pub fn insert_existing(&mut self, dispatch: TurnDispatchRecord) {
