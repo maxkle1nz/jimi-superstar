@@ -3,6 +3,7 @@ pub mod event;
 pub mod fieldvault;
 pub mod ids;
 pub mod mandala;
+pub mod runtime;
 pub mod session;
 pub mod slot;
 
@@ -14,6 +15,10 @@ pub use mandala::{
     MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract, MandalaExecutionPolicy,
     MandalaManifest, MandalaMemoryPolicy, MandalaOwnership, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaSkillPack, MandalaStableMemory, SacredShard,
+};
+pub use runtime::{
+    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseRuntime, KernelError,
+    LaneRecord, MandalaRegistry, SessionManager, SessionRecord, SlotRegistry, TurnRecord,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};
