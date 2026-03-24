@@ -23,3 +23,4 @@ Steering overlays now include:
 - `Mandala + FieldVault` as the canonical persistence and capsule model
 - `RETROBUILDER Chat UIX` as the default human-friendly progress surface
 - `RETROBUILDER Macro UIX` as the panoramic project status surface
+- `JIMI Control Plane UI` as the integrated cockpit/configurator surface

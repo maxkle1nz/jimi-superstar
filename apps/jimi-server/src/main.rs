@@ -87,6 +87,20 @@ struct MacroStatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ControlPlaneSection {
+    label: &'static str,
+    status: &'static str,
+    priority: &'static str,
+    summary: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ControlPlaneResponse {
+    title: &'static str,
+    sections: Vec<ControlPlaneSection>,
+}
+
+#[derive(Debug, Serialize)]
 struct CapsuleBootstrapResponse {
     mandala_id: String,
     capsule_id: String,
@@ -195,6 +209,7 @@ async fn main() {
         .route("/artifacts", get(list_artifacts))
         .route("/providers", get(list_providers))
         .route("/status/macro", get(macro_status))
+        .route("/status/control-plane", get(control_plane_status))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
@@ -1078,6 +1093,11 @@ async fn macro_status(State(state): State<AppState>) -> Json<MacroStatusResponse
     Json(build_macro_status(&runtime.inventory()))
 }
 
+async fn control_plane_status(State(state): State<AppState>) -> Json<ControlPlaneResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(build_control_plane_status(&runtime.inventory()))
+}
+
 fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
     let runtime_percent = if inventory.sessions > 0 && inventory.events > 0 {
         82
@@ -1219,6 +1239,84 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             MacroMenuItem {
                 key: "8",
                 prompt: "show recommended next step",
+            },
+        ],
+    }
+}
+
+fn build_control_plane_status(inventory: &HouseInventory) -> ControlPlaneResponse {
+    ControlPlaneResponse {
+        title: "Integrated control plane",
+        sections: vec![
+            ControlPlaneSection {
+                label: "House Control",
+                status: "partial",
+                priority: "high",
+                summary: "macro steering and method visibility are online; mutable runtime modes still ahead",
+            },
+            ControlPlaneSection {
+                label: "Mandala Studio",
+                status: if inventory.mandalas > 0 {
+                    "visible"
+                } else {
+                    "pending"
+                },
+                priority: "high",
+                summary: "mandalas and snapshots are visible; editing policies in cockpit is next",
+            },
+            ControlPlaneSection {
+                label: "Capsule Manager",
+                status: if inventory.capsules > 0 {
+                    "visible"
+                } else {
+                    "pending"
+                },
+                priority: "medium",
+                summary: "capsules, slots, and artifacts are visible; install graph and dependency checks are future work",
+            },
+            ControlPlaneSection {
+                label: "Provider Matrix",
+                status: if inventory.provider_lanes > 0 {
+                    "partial"
+                } else {
+                    "pending"
+                },
+                priority: "high",
+                summary: "connected lanes are shown; adapter matrix and fallback routing are not extracted yet",
+            },
+            ControlPlaneSection {
+                label: "Memory Console",
+                status: if inventory.memory_capsules > 0 {
+                    "partial"
+                } else {
+                    "pending"
+                },
+                priority: "high",
+                summary: "capsules, summaries, bridges, triggers, promotions, and compaction metrics are live",
+            },
+            ControlPlaneSection {
+                label: "Security Surface",
+                status: "planned",
+                priority: "medium",
+                summary: "policy is modeled in specs; dedicated approval and security controls still need a UI surface",
+            },
+            ControlPlaneSection {
+                label: "Workflow Composer",
+                status: "planned",
+                priority: "medium",
+                summary: "turns and dispatches exist; higher-order flow composition is still ahead",
+            },
+            ControlPlaneSection {
+                label: "Macro Planner",
+                status: "online",
+                priority: "high",
+                summary: "project panorama, subsystem bars, and menu are now visible in the cockpit",
+            },
+            ControlPlaneSection {
+                label: "Marketplace Shell",
+                status: "future",
+                priority: "later",
+                summary: "capsule marketplace remains a constitutional target, not an implemented surface yet",
             },
         ],
     }
@@ -1894,6 +1992,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Control Plane</h2>
+            <div class="small">Integrated navigator for the house as cockpit and configurator.</div>
+            <div class="list" id="control-plane-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <div class="list" id="memory-capsule-list"></div>
@@ -1950,6 +2054,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const contextPacketViewEl = document.getElementById('context-packet-view');
       const macroStatusViewEl = document.getElementById('macro-status-view');
       const macroMenuViewEl = document.getElementById('macro-menu-view');
+      const controlPlaneViewEl = document.getElementById('control-plane-view');
 
       const state = {
         sessions: [],
@@ -1967,7 +2072,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         slots: [],
         artifacts: [],
         providers: [],
-        macroStatus: null
+        macroStatus: null,
+        controlPlane: null
       };
 
       function renderInventory(data) {
@@ -2034,6 +2140,21 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         macroMenuViewEl.innerHTML = (macro.menu || []).map(item => `
           <div class="card">
             <strong>[${escapeHtml(item.key)}] ${escapeHtml(item.prompt)}</strong>
+          </div>
+        `).join('');
+      }
+
+      function renderControlPlane() {
+        if (!state.controlPlane) {
+          controlPlaneViewEl.innerHTML = '<div class="empty">Control plane map not loaded yet.</div>';
+          return;
+        }
+        controlPlaneViewEl.innerHTML = (state.controlPlane.sections || []).map(section => `
+          <div class="card">
+            <strong>${escapeHtml(section.label)}</strong>
+            <div class="meta">status: ${escapeHtml(section.status)}</div>
+            <div class="meta">priority: ${escapeHtml(section.priority)}</div>
+            <div class="meta">${escapeHtml(section.summary)}</div>
           </div>
         `).join('');
       }
@@ -2306,6 +2427,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderMacroStatus();
       }
 
+      async function refreshControlPlane() {
+        const res = await fetch('/status/control-plane');
+        state.controlPlane = await res.json();
+        renderControlPlane();
+      }
+
       async function refreshSessions() {
         const res = await fetch('/sessions');
         state.sessions = await res.json();
@@ -2404,7 +2531,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -2430,6 +2557,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([
           refreshInventory(),
           refreshMacroStatus(),
+          refreshControlPlane(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -2451,6 +2579,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([
           refreshInventory(),
           refreshMacroStatus(),
+          refreshControlPlane(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -2493,6 +2622,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([
           refreshInventory(),
           refreshMacroStatus(),
+          refreshControlPlane(),
           refreshMandalas(),
           refreshCapsules(),
           refreshSlots(),
@@ -2509,7 +2639,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -2521,7 +2651,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -2539,10 +2669,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshSessions().catch(console.error);
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
@@ -2551,6 +2683,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -2560,16 +2693,19 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
             } else if (event.event_type === 'artifact_created') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
               refreshArtifacts().catch(console.error);
             } else if (event.event_type === 'engine_selected') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
               refreshProviders().catch(console.error);
               refreshDispatches().catch(console.error);
             }
@@ -2669,6 +2805,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       Promise.all([
         refreshInventory(),
         refreshMacroStatus(),
+        refreshControlPlane(),
         refreshSessions(),
         refreshTurns(),
         refreshDispatches(),
