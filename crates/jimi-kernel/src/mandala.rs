@@ -36,17 +36,69 @@ pub struct MandalaCapabilityPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MandalaMemoryPolicy {
+    #[serde(default = "default_boot_include")]
     pub boot_include: Vec<String>,
+    #[serde(default = "default_lookup_sources")]
     pub lookup_sources: Vec<String>,
+    #[serde(default = "default_hot_context_limit")]
+    pub hot_context_limit: usize,
+    #[serde(default = "default_relevant_context_limit")]
+    pub relevant_context_limit: usize,
+    #[serde(default = "default_promotion_confidence_threshold")]
+    pub promotion_confidence_threshold: f32,
+    #[serde(default = "default_promote_to_stable_memory")]
+    pub promote_to_stable_memory: bool,
+    #[serde(default = "default_allow_fieldvault_sealing")]
+    pub allow_fieldvault_sealing: bool,
+    #[serde(default = "default_seal_privacy_classes")]
+    pub seal_privacy_classes: Vec<String>,
 }
 
 impl Default for MandalaMemoryPolicy {
     fn default() -> Self {
         Self {
-            boot_include: vec!["stable_memory".into(), "active_snapshot".into()],
-            lookup_sources: vec!["past".into(), "cortex".into(), "vault".into()],
+            boot_include: default_boot_include(),
+            lookup_sources: default_lookup_sources(),
+            hot_context_limit: default_hot_context_limit(),
+            relevant_context_limit: default_relevant_context_limit(),
+            promotion_confidence_threshold: default_promotion_confidence_threshold(),
+            promote_to_stable_memory: default_promote_to_stable_memory(),
+            allow_fieldvault_sealing: default_allow_fieldvault_sealing(),
+            seal_privacy_classes: default_seal_privacy_classes(),
         }
     }
+}
+
+fn default_boot_include() -> Vec<String> {
+    vec!["stable_memory".into(), "active_snapshot".into()]
+}
+
+fn default_lookup_sources() -> Vec<String> {
+    vec!["past".into(), "cortex".into(), "vault".into()]
+}
+
+fn default_hot_context_limit() -> usize {
+    5
+}
+
+fn default_relevant_context_limit() -> usize {
+    5
+}
+
+fn default_promotion_confidence_threshold() -> f32 {
+    0.9
+}
+
+fn default_promote_to_stable_memory() -> bool {
+    true
+}
+
+fn default_allow_fieldvault_sealing() -> bool {
+    true
+}
+
+fn default_seal_privacy_classes() -> Vec<String> {
+    vec!["operator_private".into(), "sealed_candidate".into()]
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

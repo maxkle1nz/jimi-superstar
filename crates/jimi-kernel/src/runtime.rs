@@ -302,8 +302,7 @@ impl SessionManager {
     }
 
     pub fn insert_session(&mut self, session: SessionRecord) {
-        self.sessions
-            .insert(session.session_id.0.clone(), session);
+        self.sessions.insert(session.session_id.0.clone(), session);
     }
 
     pub fn insert_lane(&mut self, lane: LaneRecord) {
@@ -383,8 +382,7 @@ impl CapsuleRegistry {
     }
 
     pub fn insert_existing(&mut self, capsule: CapsuleRecord) {
-        self.capsules
-            .insert(capsule.capsule_id.clone(), capsule);
+        self.capsules.insert(capsule.capsule_id.clone(), capsule);
     }
 }
 
@@ -394,7 +392,11 @@ pub struct SlotRegistry {
 }
 
 impl SlotRegistry {
-    pub fn define_slot(&mut self, slot_id: impl Into<String>, label: impl Into<String>) -> PersonalitySlot {
+    pub fn define_slot(
+        &mut self,
+        slot_id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> PersonalitySlot {
         let slot = PersonalitySlot {
             slot_id: slot_id.into(),
             label: label.into(),
@@ -595,7 +597,8 @@ impl TurnDispatchRegistry {
     }
 
     pub fn insert_existing(&mut self, dispatch: TurnDispatchRecord) {
-        self.dispatches.insert(dispatch.dispatch_id.clone(), dispatch);
+        self.dispatches
+            .insert(dispatch.dispatch_id.clone(), dispatch);
     }
 }
 
@@ -675,7 +678,11 @@ impl MemoryCapsuleRegistry {
                 "warm" => 0.08,
                 _ => 0.03,
             };
-            let role_bonus = if capsule.role == "operator" { 0.06 } else { 0.03 };
+            let role_bonus = if capsule.role == "operator" {
+                0.06
+            } else {
+                0.03
+            };
             capsule.relevance_score = (capsule.confidence_level + band_bonus + role_bonus).min(1.0);
         }
     }
@@ -731,10 +738,8 @@ impl SummaryCheckpointRegistry {
             confidence_level,
             generated_at: Utc::now(),
         };
-        self.checkpoints.insert(
-            checkpoint.summary_checkpoint_id.clone(),
-            checkpoint.clone(),
-        );
+        self.checkpoints
+            .insert(checkpoint.summary_checkpoint_id.clone(), checkpoint.clone());
         checkpoint
     }
 
@@ -967,7 +972,10 @@ impl HouseRuntime {
         }
     }
 
-    pub fn refresh_memory_for_session(&mut self, session_id: &SessionId) -> Option<SummaryCheckpointRecord> {
+    pub fn refresh_memory_for_session(
+        &mut self,
+        session_id: &SessionId,
+    ) -> Option<SummaryCheckpointRecord> {
         self.memory_capsules.reband_session(session_id);
 
         let hot_capsules: Vec<MemoryCapsuleRecord> = self
@@ -1030,25 +1038,46 @@ impl HouseRuntime {
         for slot in self.slots.all() {
             if let Some(mandala_id) = &slot.active_mandala_id {
                 if let Ok(mandala) = self.mandalas.get_mut(mandala_id) {
-                    mandala.active_snapshot.current_goal = decisions_retained
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(|| semantic_digest.clone());
-                    mandala.active_snapshot.active_decisions = decisions_retained.clone();
-                    mandala.active_snapshot.blockers = unresolved_items.clone();
-                    mandala.active_snapshot.next_actions = hot_capsules
+                    let memory_policy = mandala.memory_policy.clone();
+                    let hot_context_limit = memory_policy.hot_context_limit.max(1);
+                    if memory_policy
+                        .boot_include
                         .iter()
-                        .map(|capsule| capsule.content.clone())
-                        .rev()
-                        .take(3)
-                        .collect();
-                    mandala.active_snapshot.hot_context = hot_capsules
-                        .iter()
-                        .map(|capsule| capsule.content.clone())
-                        .collect();
+                        .any(|value| value == "active_snapshot")
+                    {
+                        mandala.active_snapshot.current_goal = decisions_retained
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| semantic_digest.clone());
+                        mandala.active_snapshot.active_decisions = decisions_retained.clone();
+                        mandala.active_snapshot.blockers = unresolved_items.clone();
+                        mandala.active_snapshot.next_actions = hot_capsules
+                            .iter()
+                            .map(|capsule| capsule.content.clone())
+                            .rev()
+                            .take(3)
+                            .collect();
+                        mandala.active_snapshot.hot_context = hot_capsules
+                            .iter()
+                            .rev()
+                            .take(hot_context_limit)
+                            .map(|capsule| capsule.content.clone())
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                    }
 
                     if let Some(capsule) = &latest_hot_capsule {
-                        if capsule.role == "operator" && capsule.confidence_level >= 0.9 {
+                        if memory_policy.promote_to_stable_memory
+                            && memory_policy
+                                .boot_include
+                                .iter()
+                                .any(|value| value == "stable_memory")
+                            && capsule.role == "operator"
+                            && capsule.confidence_level
+                                >= memory_policy.promotion_confidence_threshold
+                        {
                             mandala
                                 .stable_memory
                                 .learned_rules
@@ -1070,38 +1099,75 @@ impl HouseRuntime {
             }
         }
 
+        let active_policies = self
+            .slots
+            .all()
+            .into_iter()
+            .filter_map(|slot| slot.active_mandala_id.as_ref())
+            .filter_map(|mandala_id| self.mandalas.get(mandala_id).ok())
+            .map(|mandala| mandala.memory_policy.clone())
+            .collect::<Vec<_>>();
+
         for capsule in hot_capsules
             .iter()
             .chain(warm_capsules.iter())
             .chain(archive_capsules.iter())
         {
-            if capsule.privacy_class == "operator_private" || capsule.privacy_class == "sealed_candidate" {
-                let _ = self.fieldvault.register_artifact(
-                    None,
-                    None,
-                    SealLevel::CapsulePrivate,
-                    format!("./vault/{}.fld", capsule.memory_capsule_id),
-                    true,
-                    false,
-                );
-                let _ = self.memory_promotions.create(
-                    session_id.clone(),
-                    capsule.memory_capsule_id.clone(),
-                    "fieldvault",
-                    capsule.content.clone(),
-                    capsule.confidence_level,
-                );
+            let should_seal = active_policies.iter().any(|policy| {
+                policy.allow_fieldvault_sealing
+                    && policy
+                        .seal_privacy_classes
+                        .iter()
+                        .any(|class_name| class_name == &capsule.privacy_class)
+            });
+
+            if should_seal {
+                let already_sealed = self
+                    .memory_promotions
+                    .by_session(session_id)
+                    .into_iter()
+                    .any(|promotion| {
+                        promotion.memory_capsule_id == capsule.memory_capsule_id
+                            && promotion.target_plane == "fieldvault"
+                    });
+                if !already_sealed {
+                    let _ = self.fieldvault.register_artifact(
+                        None,
+                        None,
+                        SealLevel::CapsulePrivate,
+                        format!("./vault/{}.fld", capsule.memory_capsule_id),
+                        true,
+                        false,
+                    );
+                    let _ = self.memory_promotions.create(
+                        session_id.clone(),
+                        capsule.memory_capsule_id.clone(),
+                        "fieldvault",
+                        capsule.content.clone(),
+                        capsule.confidence_level,
+                    );
+                }
             }
         }
 
         let hot_terms = hot_capsules
             .iter()
-            .flat_map(|capsule| capsule.content.to_lowercase().split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .flat_map(|capsule| {
+                capsule
+                    .content
+                    .to_lowercase()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
 
         for capsule in warm_capsules.iter().chain(archive_capsules.iter()) {
             let content_lower = capsule.content.to_lowercase();
-            if hot_terms.iter().any(|term| term.len() > 4 && content_lower.contains(term)) {
+            if hot_terms
+                .iter()
+                .any(|term| term.len() > 4 && content_lower.contains(term))
+            {
                 let _ = self.memory_bridges.create(
                     session_id.clone(),
                     hot_capsules
@@ -1141,6 +1207,15 @@ impl HouseRuntime {
         limit: usize,
     ) -> Vec<MemoryCapsuleRecord> {
         self.memory_capsules.query_session(session_id, query, limit)
+    }
+
+    pub fn active_memory_policy(&self) -> Option<crate::mandala::MandalaMemoryPolicy> {
+        self.slots
+            .all()
+            .into_iter()
+            .find_map(|slot| slot.active_mandala_id.as_ref())
+            .and_then(|mandala_id| self.mandalas.get(mandala_id).ok())
+            .map(|mandala| mandala.memory_policy.clone())
     }
 }
 
@@ -1195,8 +1270,16 @@ fn score_capsule_for_query(capsule: &MemoryCapsuleRecord, lowered_query: &str) -
     let query_bonus = if lowered_query.is_empty() {
         0.0
     } else {
-        let content_match = if content_lower.contains(lowered_query) { 0.25 } else { 0.0 };
-        let intent_match = if intent_lower.contains(lowered_query) { 0.18 } else { 0.0 };
+        let content_match = if content_lower.contains(lowered_query) {
+            0.25
+        } else {
+            0.0
+        };
+        let intent_match = if intent_lower.contains(lowered_query) {
+            0.18
+        } else {
+            0.0
+        };
         content_match + intent_match
     };
 
@@ -1210,10 +1293,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        DurableStore,
-        MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaExecutionPolicy, MandalaManifest,
-        MandalaMemoryPolicy, MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory,
-        SealLevel,
+        DurableStore, MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaExecutionPolicy,
+        MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs, MandalaSelf,
+        MandalaStableMemory, SealLevel,
     };
 
     fn sample_mandala(id: &str) -> MandalaManifest {
@@ -1271,7 +1353,10 @@ mod tests {
         let session = runtime.bootstrap_session("JIMI bootstrap");
 
         assert_eq!(runtime.events.all().len(), 1);
-        assert_eq!(runtime.events.all()[0].event_type, EventType::SessionCreated);
+        assert_eq!(
+            runtime.events.all()[0].event_type,
+            EventType::SessionCreated
+        );
         assert_eq!(
             runtime.events.all()[0].session_id.as_deref(),
             Some(session.session_id.0.as_str())
@@ -1283,13 +1368,19 @@ mod tests {
         let mut runtime = HouseRuntime::default();
         let mandala = sample_mandala("jimi.core");
         runtime.mandalas.install(mandala);
-        let capsule = runtime
-            .capsules
-            .install("capsule:jimi.core", "jimi.core", 1, "marketplace:test");
+        let capsule =
+            runtime
+                .capsules
+                .install("capsule:jimi.core", "jimi.core", 1, "marketplace:test");
         runtime.slots.define_slot("primary", "Primary");
         runtime
             .slots
-            .bind_capsule("primary", capsule.capsule_id.clone(), capsule.mandala_id.clone(), false)
+            .bind_capsule(
+                "primary",
+                capsule.capsule_id.clone(),
+                capsule.mandala_id.clone(),
+                false,
+            )
             .unwrap();
         runtime.slots.activate("primary").unwrap();
 

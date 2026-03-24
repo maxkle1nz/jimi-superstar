@@ -6,23 +6,22 @@ use std::{
 };
 
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::Html,
     routing::{get, post},
-    Json, Router,
 };
 use jimi_kernel::{
-    ActorRef, DurableStore, EventEnvelope, EventType, HouseInventory, HouseRuntime,
-    FieldVaultArtifact, MemoryBridgeRecord,
-    MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
+    ActorRef, DurableStore, EventEnvelope, EventType, FieldVaultArtifact, HouseInventory,
+    HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
-    MandalaSelf, MandalaStableMemory, MemoryCapsuleRecord, SealLevel, SessionRecord,
-    SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
-    ResynthesisTriggerRecord, MemoryPromotionRecord,
+    MandalaSelf, MandalaStableMemory, MemoryBridgeRecord, MemoryCapsuleRecord,
+    MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord, SlotBindingState,
+    SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -101,13 +100,17 @@ struct DispatchExecutionResponse {
 #[derive(Debug, Serialize)]
 struct ContextPacketResponse {
     session_id: String,
+    active_mandala_id: Option<String>,
+    memory_policy: MandalaMemoryPolicy,
     hot_capsules: Vec<MemoryCapsuleRecord>,
     relevant_capsules: Vec<MemoryCapsuleRecord>,
     summary_checkpoints: Vec<SummaryCheckpointRecord>,
     memory_bridges: Vec<MemoryBridgeRecord>,
     resynthesis_triggers: Vec<ResynthesisTriggerRecord>,
     memory_promotions: Vec<MemoryPromotionRecord>,
+    stable_memory: Option<MandalaStableMemory>,
     active_snapshot: Option<MandalaActiveSnapshot>,
+    query_seed: String,
     providers: Vec<String>,
 }
 
@@ -137,11 +140,17 @@ async fn main() {
         .route("/turns", get(list_turns).post(create_turn))
         .route("/dispatches", get(list_dispatches))
         .route("/dispatches/execute-latest", post(execute_latest_dispatch))
-        .route("/dispatches/execute-latest-live", post(execute_latest_dispatch_live))
+        .route(
+            "/dispatches/execute-latest-live",
+            post(execute_latest_dispatch_live),
+        )
         .route("/memory/capsules", get(list_memory_capsules))
         .route("/memory/summaries", get(list_summary_checkpoints))
         .route("/memory/bridges", get(list_memory_bridges))
-        .route("/memory/resynthesis-triggers", get(list_resynthesis_triggers))
+        .route(
+            "/memory/resynthesis-triggers",
+            get(list_resynthesis_triggers),
+        )
         .route("/memory/promotions", get(list_memory_promotions))
         .route("/memory/query/:session_id", get(query_memory))
         .route("/context-packet/:session_id", get(context_packet))
@@ -182,18 +191,9 @@ async fn cockpit() -> Html<&'static str> {
     Html(COCKPIT_HTML)
 }
 
-async fn list_sessions(
-    State(state): State<AppState>,
-) -> Json<Vec<SessionRecord>> {
+async fn list_sessions(State(state): State<AppState>) -> Json<Vec<SessionRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
-    Json(
-        runtime
-            .sessions
-            .sessions()
-            .into_iter()
-            .cloned()
-            .collect(),
-    )
+    Json(runtime.sessions.sessions().into_iter().cloned().collect())
 }
 
 async fn create_session(
@@ -238,7 +238,11 @@ async fn create_turn(
 
     let turn = runtime
         .sessions
-        .create_turn(&session.session_id, &session.active_lane_id, request.intent_mode.clone())
+        .create_turn(
+            &session.session_id,
+            &session.active_lane_id,
+            request.intent_mode.clone(),
+        )
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
 
     runtime.events.append(
@@ -305,7 +309,8 @@ async fn create_turn(
         }),
     );
 
-    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(2).cloned().collect();
+    let new_events: Vec<EventEnvelope> =
+        runtime.events.all().iter().rev().take(2).cloned().collect();
     persist_runtime(&state, &runtime)?;
     drop(runtime);
 
@@ -313,7 +318,10 @@ async fn create_turn(
         let _ = state.events_tx.send(event);
     }
 
-    Ok((StatusCode::CREATED, Json(TurnBootstrapResponse { turn, dispatch })))
+    Ok((
+        StatusCode::CREATED,
+        Json(TurnBootstrapResponse { turn, dispatch }),
+    ))
 }
 
 async fn list_events(State(state): State<AppState>) -> Json<Vec<EventEnvelope>> {
@@ -340,12 +348,17 @@ async fn list_summary_checkpoints(
     State(state): State<AppState>,
 ) -> Json<Vec<SummaryCheckpointRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
-    Json(runtime.summary_checkpoints.all().into_iter().cloned().collect())
+    Json(
+        runtime
+            .summary_checkpoints
+            .all()
+            .into_iter()
+            .cloned()
+            .collect(),
+    )
 }
 
-async fn list_memory_bridges(
-    State(state): State<AppState>,
-) -> Json<Vec<MemoryBridgeRecord>> {
+async fn list_memory_bridges(State(state): State<AppState>) -> Json<Vec<MemoryBridgeRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.memory_bridges.all().into_iter().cloned().collect())
 }
@@ -354,14 +367,26 @@ async fn list_resynthesis_triggers(
     State(state): State<AppState>,
 ) -> Json<Vec<ResynthesisTriggerRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
-    Json(runtime.resynthesis_triggers.all().into_iter().cloned().collect())
+    Json(
+        runtime
+            .resynthesis_triggers
+            .all()
+            .into_iter()
+            .cloned()
+            .collect(),
+    )
 }
 
-async fn list_memory_promotions(
-    State(state): State<AppState>,
-) -> Json<Vec<MemoryPromotionRecord>> {
+async fn list_memory_promotions(State(state): State<AppState>) -> Json<Vec<MemoryPromotionRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
-    Json(runtime.memory_promotions.all().into_iter().cloned().collect())
+    Json(
+        runtime
+            .memory_promotions
+            .all()
+            .into_iter()
+            .cloned()
+            .collect(),
+    )
 }
 
 async fn context_packet(
@@ -370,26 +395,48 @@ async fn context_packet(
 ) -> Result<Json<ContextPacketResponse>, (StatusCode, String)> {
     let runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let session_id = jimi_kernel::SessionId(session_id);
+    let memory_policy = runtime.active_memory_policy().unwrap_or_default();
+    let active_mandala_id = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.clone());
 
     let hot_capsules: Vec<MemoryCapsuleRecord> = runtime
         .memory_capsules
         .by_session(&session_id)
         .into_iter()
         .rev()
-        .take(5)
+        .take(memory_policy.hot_context_limit.max(1))
         .cloned()
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect();
 
-    let active_snapshot = runtime
-        .slots
-        .all()
-        .into_iter()
-        .find_map(|slot| slot.active_mandala_id.as_ref())
-        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok())
-        .map(|mandala| mandala.active_snapshot.clone());
+    let active_mandala = active_mandala_id
+        .as_ref()
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok());
+
+    let active_snapshot = if memory_policy
+        .boot_include
+        .iter()
+        .any(|value| value == "active_snapshot")
+    {
+        active_mandala.map(|mandala| mandala.active_snapshot.clone())
+    } else {
+        None
+    };
+
+    let stable_memory = if memory_policy
+        .boot_include
+        .iter()
+        .any(|value| value == "stable_memory")
+    {
+        active_mandala.map(|mandala| mandala.stable_memory.clone())
+    } else {
+        None
+    };
 
     let query_seed = active_snapshot
         .as_ref()
@@ -397,7 +444,11 @@ async fn context_packet(
         .or_else(|| hot_capsules.last().map(|capsule| capsule.content.clone()))
         .unwrap_or_default();
 
-    let relevant_capsules = runtime.query_memory(&session_id, &query_seed, 5);
+    let relevant_capsules = runtime.query_memory(
+        &session_id,
+        &query_seed,
+        memory_policy.relevant_context_limit.max(1),
+    );
 
     let summary_checkpoints = runtime
         .summary_checkpoints
@@ -456,13 +507,17 @@ async fn context_packet(
 
     Ok(Json(ContextPacketResponse {
         session_id: session_id.0,
+        active_mandala_id,
+        memory_policy,
         hot_capsules,
         relevant_capsules,
         summary_checkpoints,
         memory_bridges,
         resynthesis_triggers,
         memory_promotions,
+        stable_memory,
         active_snapshot,
+        query_seed,
         providers,
     }))
 }
@@ -490,7 +545,12 @@ async fn execute_latest_dispatch(
         .rev()
         .find(|dispatch| dispatch.status == "queued")
         .cloned()
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "no queued dispatches available".to_string()))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "no queued dispatches available".to_string(),
+            )
+        })?;
 
     let running_dispatch = runtime
         .dispatches
@@ -570,7 +630,8 @@ async fn execute_latest_dispatch(
         }),
     );
 
-    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(2).cloned().collect();
+    let new_events: Vec<EventEnvelope> =
+        runtime.events.all().iter().rev().take(2).cloned().collect();
     persist_runtime(&state, &runtime)?;
     drop(runtime);
 
@@ -601,7 +662,12 @@ async fn execute_latest_dispatch_live(
             .rev()
             .find(|dispatch| dispatch.status == "queued")
             .cloned()
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "no queued dispatches available".to_string()))?;
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "no queued dispatches available".to_string(),
+                )
+            })?;
 
         let running_dispatch = runtime
             .dispatches
@@ -649,12 +715,11 @@ async fn execute_latest_dispatch_live(
     };
 
     let live_intent_summary = dispatch.intent_summary.clone();
-    let output_text = tokio::task::spawn_blocking(move || {
-        run_codex_exec(&house_root, &live_intent_summary)
-    })
-    .await
-    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-    .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    let output_text =
+        tokio::task::spawn_blocking(move || run_codex_exec(&house_root, &live_intent_summary))
+            .await
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
 
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let completed_dispatch = runtime
@@ -740,7 +805,9 @@ async fn list_artifacts(State(state): State<AppState>) -> Json<Vec<FieldVaultArt
     Json(runtime.fieldvault.all().into_iter().cloned().collect())
 }
 
-async fn list_providers(State(state): State<AppState>) -> Json<Vec<jimi_kernel::ProviderLaneRecord>> {
+async fn list_providers(
+    State(state): State<AppState>,
+) -> Json<Vec<jimi_kernel::ProviderLaneRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.providers.all().into_iter().cloned().collect())
 }
@@ -862,7 +929,8 @@ async fn bootstrap_core_capsule(
         .get(&slot_id)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .clone();
-    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(4).cloned().collect();
+    let new_events: Vec<EventEnvelope> =
+        runtime.events.all().iter().rev().take(4).cloned().collect();
     persist_runtime(&state, &runtime)?;
     drop(runtime);
 
@@ -1008,10 +1076,7 @@ async fn ws_events(
     ws.on_upgrade(move |socket| handle_ws_events(socket, state))
 }
 
-fn persist_runtime(
-    state: &AppState,
-    runtime: &HouseRuntime,
-) -> Result<(), (StatusCode, String)> {
+fn persist_runtime(state: &AppState, runtime: &HouseRuntime) -> Result<(), (StatusCode, String)> {
     let mut store = state.store.lock().map_err(internal_lock_error)?;
     store
         .persist_runtime(runtime)
@@ -1026,7 +1091,8 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
 }
 
 fn run_codex_exec(house_root: &PathBuf, intent_summary: &str) -> Result<String, String> {
-    let output_path = std::env::temp_dir().join(format!("jimi-codex-output-{}.txt", uuid::Uuid::now_v7()));
+    let output_path =
+        std::env::temp_dir().join(format!("jimi-codex-output-{}.txt", uuid::Uuid::now_v7()));
     let prompt = format!(
         "You are the live provider lane for JIMI SUPERSTAR. Respond briefly and concretely to this routed turn: {}",
         intent_summary
@@ -1082,7 +1148,10 @@ async fn handle_ws_events(mut socket: WebSocket, state: AppState) {
 
 async fn send_event(socket: &mut WebSocket, event: &EventEnvelope) -> Result<(), ()> {
     let payload = serde_json::to_string(event).map_err(|_| ())?;
-    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
+    socket
+        .send(Message::Text(payload.into()))
+        .await
+        .map_err(|_| ())
 }
 
 fn sample_core_mandala() -> MandalaManifest {
@@ -1103,8 +1172,9 @@ fn sample_core_mandala() -> MandalaManifest {
             tags: vec!["core".into(), "guardian".into(), "retrobuilder".into()],
         },
         execution_policy: MandalaExecutionPolicy {
-            body: "Protect the house, narrate the build, and keep contracts ahead of improvisation."
-                .into(),
+            body:
+                "Protect the house, narrate the build, and keep contracts ahead of improvisation."
+                    .into(),
             execution_lane: "main".into(),
             preferred_provider: "codex".into(),
             preferred_model: "gpt-5".into(),
@@ -1128,7 +1198,21 @@ fn sample_core_mandala() -> MandalaManifest {
             required: vec!["tool.exec.bash".into(), "memory.runtime".into()],
             optional: vec!["provider.codex".into(), "provider.claude".into()],
         },
-        memory_policy: MandalaMemoryPolicy::default(),
+        memory_policy: MandalaMemoryPolicy {
+            boot_include: vec!["stable_memory".into(), "active_snapshot".into()],
+            lookup_sources: vec![
+                "past".into(),
+                "cortex".into(),
+                "vault".into(),
+                "m1nd".into(),
+            ],
+            hot_context_limit: 5,
+            relevant_context_limit: 6,
+            promotion_confidence_threshold: 0.88,
+            promote_to_stable_memory: true,
+            allow_fieldvault_sealing: true,
+            seal_privacy_classes: vec!["operator_private".into(), "sealed_candidate".into()],
+        },
         stable_memory: MandalaStableMemory::default(),
         active_snapshot: MandalaActiveSnapshot {
             current_goal: "Bootstrap the first sovereign cockpit loop.".into(),
@@ -1147,8 +1231,7 @@ fn sample_core_mandala() -> MandalaManifest {
             requested_role: "guardian".into(),
             template_soul: "jimi-superstar".into(),
             execution_role: Some("house-conductor".into()),
-            default_body:
-                "Protect the sovereign agent house and keep the build grounded.".into(),
+            default_body: "Protect the sovereign agent house and keep the build grounded.".into(),
             lineage: vec!["jimi".into(), "guardian".into()],
             autoevolve: true,
         },
@@ -1726,13 +1809,24 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         contextPacketViewEl.innerHTML = `
           <div class="card">
             <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
+            <div class="meta">active mandala: ${escapeHtml(packet.active_mandala_id || 'none')}</div>
             <div class="meta">providers: ${escapeHtml((packet.providers || []).join(', ') || 'none')}</div>
+            <div class="meta">query seed: ${escapeHtml(packet.query_seed || 'none')}</div>
             <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
             <div class="meta">relevant capsules: ${escapeHtml((packet.relevant_capsules || []).length)}</div>
             <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
             <div class="meta">bridges: ${escapeHtml((packet.memory_bridges || []).length)}</div>
             <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
             <div class="meta">promotions: ${escapeHtml((packet.memory_promotions || []).length)}</div>
+            <div class="meta">boot include: ${escapeHtml((packet.memory_policy?.boot_include || []).join(' | ') || 'none')}</div>
+            <div class="meta">lookup sources: ${escapeHtml((packet.memory_policy?.lookup_sources || []).join(' | ') || 'none')}</div>
+            <div class="meta">hot limit: ${escapeHtml(packet.memory_policy?.hot_context_limit ?? 0)}</div>
+            <div class="meta">relevant limit: ${escapeHtml(packet.memory_policy?.relevant_context_limit ?? 0)}</div>
+            <div class="meta">promotion threshold: ${escapeHtml(packet.memory_policy?.promotion_confidence_threshold ?? 0)}</div>
+            <div class="meta">stable promotion: ${escapeHtml(packet.memory_policy?.promote_to_stable_memory ? 'on' : 'off')}</div>
+            <div class="meta">fieldvault sealing: ${escapeHtml(packet.memory_policy?.allow_fieldvault_sealing ? 'on' : 'off')}</div>
+            <div class="meta">seal classes: ${escapeHtml((packet.memory_policy?.seal_privacy_classes || []).join(' | ') || 'none')}</div>
+            <div class="meta">stable rules: ${escapeHtml((packet.stable_memory?.learned_rules || []).length)}</div>
             <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
             <div class="meta">blockers: ${escapeHtml((packet.active_snapshot?.blockers || []).join(' | ') || 'none')}</div>
             <div class="meta">next actions: ${escapeHtml((packet.active_snapshot?.next_actions || []).join(' | ') || 'none')}</div>

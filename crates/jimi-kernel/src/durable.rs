@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use thiserror::Error;
 
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
-    LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord, PersonalitySlot,
-    ProviderLaneRecord, ResynthesisTriggerRecord, MemoryPromotionRecord, SessionId, SessionRecord,
+    LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord, MemoryPromotionRecord,
+    PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord, SessionId, SessionRecord,
     SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
 };
 
@@ -625,7 +625,15 @@ impl DurableStore {
                 ))
             })?;
             for row in rows {
-                let (slot_id, label, capsule_id, principal_id, state, unlock_required, active_mandala_id) = row?;
+                let (
+                    slot_id,
+                    label,
+                    capsule_id,
+                    principal_id,
+                    state,
+                    unlock_required,
+                    active_mandala_id,
+                ) = row?;
                 runtime.slots.insert_existing(PersonalitySlot {
                     slot_id,
                     label,
@@ -656,7 +664,17 @@ impl DurableStore {
                 ))
             })?;
             for row in rows {
-                let (artifact_id, capsule_id, slot_id, seal_level, fld_path, portable, machine_bound, sha256, plaintext_projection_ref) = row?;
+                let (
+                    artifact_id,
+                    capsule_id,
+                    slot_id,
+                    seal_level,
+                    fld_path,
+                    portable,
+                    machine_bound,
+                    sha256,
+                    plaintext_projection_ref,
+                ) = row?;
                 runtime.fieldvault.insert_existing(FieldVaultArtifact {
                     artifact_id,
                     capsule_id,
@@ -773,20 +791,22 @@ impl DurableStore {
                     band,
                     created_at,
                 ) = row?;
-                runtime.memory_capsules.insert_existing(MemoryCapsuleRecord {
-                    memory_capsule_id,
-                    session_id: SessionId(session_id),
-                    lane_id: LaneId(lane_id),
-                    turn_id: turn_id.map(TurnId),
-                    role,
-                    content,
-                    intent_summary,
-                    relevance_score,
-                    confidence_level,
-                    privacy_class,
-                    band,
-                    created_at: parse_dt(&created_at)?,
-                });
+                runtime
+                    .memory_capsules
+                    .insert_existing(MemoryCapsuleRecord {
+                        memory_capsule_id,
+                        session_id: SessionId(session_id),
+                        lane_id: LaneId(lane_id),
+                        turn_id: turn_id.map(TurnId),
+                        role,
+                        content,
+                        intent_summary,
+                        relevance_score,
+                        confidence_level,
+                        privacy_class,
+                        band,
+                        created_at: parse_dt(&created_at)?,
+                    });
             }
         }
 
@@ -819,17 +839,19 @@ impl DurableStore {
                     confidence_level,
                     generated_at,
                 ) = row?;
-                runtime.summary_checkpoints.insert_existing(SummaryCheckpointRecord {
-                    summary_checkpoint_id,
-                    session_id: SessionId(session_id),
-                    source_band,
-                    source_capsule_ids: from_json_string(&source_capsule_ids_json)?,
-                    semantic_digest,
-                    decisions_retained: from_json_string(&decisions_retained_json)?,
-                    unresolved_items: from_json_string(&unresolved_items_json)?,
-                    confidence_level,
-                    generated_at: parse_dt(&generated_at)?,
-                });
+                runtime
+                    .summary_checkpoints
+                    .insert_existing(SummaryCheckpointRecord {
+                        summary_checkpoint_id,
+                        session_id: SessionId(session_id),
+                        source_band,
+                        source_capsule_ids: from_json_string(&source_capsule_ids_json)?,
+                        semantic_digest,
+                        decisions_retained: from_json_string(&decisions_retained_json)?,
+                        unresolved_items: from_json_string(&unresolved_items_json)?,
+                        confidence_level,
+                        generated_at: parse_dt(&generated_at)?,
+                    });
             }
         }
 
@@ -849,7 +871,15 @@ impl DurableStore {
                 ))
             })?;
             for row in rows {
-                let (memory_bridge_id, session_id, from_capsule_id, to_capsule_id, bridge_kind, strength, created_at) = row?;
+                let (
+                    memory_bridge_id,
+                    session_id,
+                    from_capsule_id,
+                    to_capsule_id,
+                    bridge_kind,
+                    strength,
+                    created_at,
+                ) = row?;
                 runtime.memory_bridges.insert_existing(MemoryBridgeRecord {
                     memory_bridge_id,
                     session_id: SessionId(session_id),
@@ -877,15 +907,24 @@ impl DurableStore {
                 ))
             })?;
             for row in rows {
-                let (resynthesis_trigger_id, session_id, trigger_kind, summary, confidence_level, created_at) = row?;
-                runtime.resynthesis_triggers.insert_existing(ResynthesisTriggerRecord {
+                let (
                     resynthesis_trigger_id,
-                    session_id: SessionId(session_id),
+                    session_id,
                     trigger_kind,
                     summary,
                     confidence_level,
-                    created_at: parse_dt(&created_at)?,
-                });
+                    created_at,
+                ) = row?;
+                runtime
+                    .resynthesis_triggers
+                    .insert_existing(ResynthesisTriggerRecord {
+                        resynthesis_trigger_id,
+                        session_id: SessionId(session_id),
+                        trigger_kind,
+                        summary,
+                        confidence_level,
+                        created_at: parse_dt(&created_at)?,
+                    });
             }
         }
 
@@ -905,16 +944,26 @@ impl DurableStore {
                 ))
             })?;
             for row in rows {
-                let (memory_promotion_id, session_id, memory_capsule_id, target_plane, promoted_value, confidence_level, created_at) = row?;
-                runtime.memory_promotions.insert_existing(MemoryPromotionRecord {
+                let (
                     memory_promotion_id,
-                    session_id: SessionId(session_id),
+                    session_id,
                     memory_capsule_id,
                     target_plane,
                     promoted_value,
                     confidence_level,
-                    created_at: parse_dt(&created_at)?,
-                });
+                    created_at,
+                ) = row?;
+                runtime
+                    .memory_promotions
+                    .insert_existing(MemoryPromotionRecord {
+                        memory_promotion_id,
+                        session_id: SessionId(session_id),
+                        memory_capsule_id,
+                        target_plane,
+                        promoted_value,
+                        confidence_level,
+                        created_at: parse_dt(&created_at)?,
+                    });
             }
         }
 
