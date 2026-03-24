@@ -52,6 +52,15 @@ struct CreateTurnRequest {
     intent_summary: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateMemoryPolicyRequest {
+    hot_context_limit: usize,
+    relevant_context_limit: usize,
+    promotion_confidence_threshold: f32,
+    promote_to_stable_memory: bool,
+    allow_fieldvault_sealing: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct InventoryResponse {
     inventory: HouseInventory,
@@ -106,6 +115,12 @@ struct CapsuleBootstrapResponse {
     capsule_id: String,
     slot_id: String,
     slot_state: SlotBindingState,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryPolicyUpdateResponse {
+    mandala_id: String,
+    memory_policy: MandalaMemoryPolicy,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +219,10 @@ async fn main() {
         .route("/memory/query/:session_id", get(query_memory))
         .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
+        .route(
+            "/mandalas/:mandala_id/memory-policy",
+            post(update_mandala_memory_policy),
+        )
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
@@ -1045,6 +1064,72 @@ async fn execute_latest_dispatch_live(
 async fn list_mandalas(State(state): State<AppState>) -> Json<Vec<MandalaManifest>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.mandalas.all().into_iter().cloned().collect())
+}
+
+async fn update_mandala_memory_policy(
+    axum::extract::Path(mandala_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateMemoryPolicyRequest>,
+) -> Result<(StatusCode, Json<MemoryPolicyUpdateResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let session_id = runtime
+        .sessions
+        .sessions()
+        .last()
+        .map(|session| session.session_id.clone());
+
+    let updated_policy = {
+        let mandala = runtime
+            .mandalas
+            .get_mut(&mandala_id)
+            .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+        mandala.memory_policy.hot_context_limit = request.hot_context_limit.max(1);
+        mandala.memory_policy.relevant_context_limit = request.relevant_context_limit.max(1);
+        mandala.memory_policy.promotion_confidence_threshold =
+            request.promotion_confidence_threshold.clamp(0.0, 1.0);
+        mandala.memory_policy.promote_to_stable_memory = request.promote_to_stable_memory;
+        mandala.memory_policy.allow_fieldvault_sealing = request.allow_fieldvault_sealing;
+        mandala.memory_policy.clone()
+    };
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit".into(),
+        },
+        SubjectRef {
+            subject_type: "mandala".into(),
+            subject_id: mandala_id.clone(),
+        },
+        EventType::MandalaPolicyUpdated,
+        session_id.as_ref(),
+        None,
+        None,
+        serde_json::json!({
+            "mandala_id": mandala_id.clone(),
+            "hot_context_limit": updated_policy.hot_context_limit,
+            "relevant_context_limit": updated_policy.relevant_context_limit,
+            "promotion_confidence_threshold": updated_policy.promotion_confidence_threshold,
+            "promote_to_stable_memory": updated_policy.promote_to_stable_memory,
+            "allow_fieldvault_sealing": updated_policy.allow_fieldvault_sealing,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(MemoryPolicyUpdateResponse {
+            mandala_id,
+            memory_policy: updated_policy,
+        }),
+    ))
 }
 
 async fn list_capsules(State(state): State<AppState>) -> Json<Vec<jimi_kernel::CapsuleRecord>> {
@@ -1994,6 +2079,17 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="panel">
             <h2>Control Plane</h2>
             <div class="small">Integrated navigator for the house as cockpit and configurator.</div>
+            <form class="session-form" id="memory-policy-form">
+              <input id="hot-limit" type="number" min="1" step="1" placeholder="hot" value="5" />
+              <input id="relevant-limit" type="number" min="1" step="1" placeholder="relevant" value="6" />
+              <input id="promotion-threshold" type="number" min="0" max="1" step="0.01" placeholder="threshold" value="0.88" />
+              <button type="submit">Update Memory Policy</button>
+            </form>
+            <div class="action-row">
+              <label class="small"><input id="stable-promotion-toggle" type="checkbox" checked /> stable promotion</label>
+              <label class="small"><input id="fieldvault-sealing-toggle" type="checkbox" checked /> fieldvault sealing</label>
+              <div class="small" id="memory-policy-status">awaiting mandala policy edit</div>
+            </div>
             <div class="list" id="control-plane-view"></div>
           </div>
 
@@ -2055,6 +2151,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const macroStatusViewEl = document.getElementById('macro-status-view');
       const macroMenuViewEl = document.getElementById('macro-menu-view');
       const controlPlaneViewEl = document.getElementById('control-plane-view');
+      const memoryPolicyFormEl = document.getElementById('memory-policy-form');
+      const hotLimitEl = document.getElementById('hot-limit');
+      const relevantLimitEl = document.getElementById('relevant-limit');
+      const promotionThresholdEl = document.getElementById('promotion-threshold');
+      const stablePromotionToggleEl = document.getElementById('stable-promotion-toggle');
+      const fieldvaultSealingToggleEl = document.getElementById('fieldvault-sealing-toggle');
+      const memoryPolicyStatusEl = document.getElementById('memory-policy-status');
 
       const state = {
         sessions: [],
@@ -2225,6 +2328,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       function renderMandalas() {
         if (!state.mandalas.length) {
           mandalaListEl.innerHTML = '<div class="empty">No mandalas installed yet.</div>';
+          syncMemoryPolicyForm(null);
           return;
         }
         mandalaListEl.innerHTML = state.mandalas.map(mandala => `
@@ -2236,6 +2340,21 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">goal: ${escapeHtml(mandala.active_snapshot?.current_goal || 'none')}</div>
           </div>
         `).join('');
+        syncMemoryPolicyForm(state.mandalas[0]);
+      }
+
+      function syncMemoryPolicyForm(mandala) {
+        const policy = mandala?.memory_policy;
+        if (!policy) {
+          memoryPolicyStatusEl.textContent = 'install a mandala to edit policy';
+          return;
+        }
+        hotLimitEl.value = policy.hot_context_limit ?? 5;
+        relevantLimitEl.value = policy.relevant_context_limit ?? 5;
+        promotionThresholdEl.value = policy.promotion_confidence_threshold ?? 0.9;
+        stablePromotionToggleEl.checked = !!policy.promote_to_stable_memory;
+        fieldvaultSealingToggleEl.checked = !!policy.allow_fieldvault_sealing;
+        memoryPolicyStatusEl.textContent = `${mandala.self_section?.id || 'mandala'} policy loaded`;
       }
 
       function renderCapsules() {
@@ -2431,6 +2550,38 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const res = await fetch('/status/control-plane');
         state.controlPlane = await res.json();
         renderControlPlane();
+      }
+
+      async function updateMemoryPolicy() {
+        const mandala = state.mandalas[0];
+        if (!mandala?.self_section?.id) {
+          throw new Error('no mandala available to update');
+        }
+        memoryPolicyStatusEl.textContent = 'updating mandala memory policy…';
+        const res = await fetch(`/mandalas/${encodeURIComponent(mandala.self_section.id)}/memory-policy`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            hot_context_limit: Number(hotLimitEl.value || 5),
+            relevant_context_limit: Number(relevantLimitEl.value || 5),
+            promotion_confidence_threshold: Number(promotionThresholdEl.value || 0.9),
+            promote_to_stable_memory: stablePromotionToggleEl.checked,
+            allow_fieldvault_sealing: fieldvaultSealingToggleEl.checked
+          })
+        });
+        if (!res.ok) {
+          throw new Error('failed to update mandala memory policy');
+        }
+        const result = await res.json();
+        memoryPolicyStatusEl.textContent = `${result.mandala_id} policy updated`;
+        await Promise.all([
+          refreshMandalas(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
       }
 
       async function refreshSessions() {
@@ -2697,6 +2848,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
+            } else if (event.event_type === 'mandala_policy_updated') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshMandalas().catch(console.error);
+              refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'artifact_created') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
@@ -2790,6 +2947,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           await bootstrapProviderLane();
         } catch (error) {
           console.error(error);
+        }
+      });
+
+      memoryPolicyFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          await updateMemoryPolicy();
+        } catch (error) {
+          console.error(error);
+          memoryPolicyStatusEl.textContent = error.message;
         }
       });
 
