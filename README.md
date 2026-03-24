@@ -78,6 +78,16 @@ The intended direction is:
 
 This means the house aims for total context availability, not total context injection.
 
+## Next Phase
+
+With the operational core now closed, the next major build phase is:
+
+- `Capsule Runtime + Marketplace Shell`
+
+The goal of that phase is to let JIMI install, verify, activate, export, and eventually publish full `Mandala FieldVault Capsules`, not just run one built-in personality.
+
+That turns the house into a sovereign capsule platform, where multiple agents can live under one operator-controlled runtime.
+
 ## Stage 1 Focus
 
 The first implementation slice builds the minimal sovereign kernel:
@@ -107,4 +117,10 @@ The first implementation slice builds the minimal sovereign kernel:
 
 ## Status
 
-This repository is public and currently in constitutional foundation plus early kernel stage.
+This repository is public and has completed the operational core arc.
+
+The next active phase is the platform expansion arc:
+
+- capsule runtime
+- installable personalities
+- marketplace shell
