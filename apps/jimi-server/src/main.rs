@@ -1390,20 +1390,84 @@ fn approval_reason_for_dispatch(
     None
 }
 
+fn mission_alignment_score(intent_summary: &str, mission_terms: &[String]) -> f32 {
+    let lowered_intent = intent_summary.to_lowercase();
+    mission_terms.iter().fold(0.0, |acc, term| {
+        if term.is_empty() {
+            acc
+        } else if lowered_intent.contains(term) {
+            acc + 0.45
+        } else {
+            let overlap = term
+                .split_whitespace()
+                .filter(|piece| piece.len() > 3 && lowered_intent.contains(piece))
+                .count();
+            acc + (overlap as f32 * 0.08)
+        }
+    })
+}
+
+fn select_next_live_dispatch(
+    runtime: &HouseRuntime,
+) -> Option<(TurnDispatchRecord, f32, String)> {
+    let active_mandala = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.as_ref())
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok());
+
+    let mut mission_terms = Vec::new();
+    if let Some(mandala) = active_mandala {
+        mission_terms.push(mandala.active_snapshot.current_goal.to_lowercase());
+        mission_terms.extend(
+            mandala
+                .active_snapshot
+                .next_actions
+                .iter()
+                .map(|value| value.to_lowercase()),
+        );
+    }
+
+    runtime
+        .dispatches
+        .all()
+        .into_iter()
+        .filter(|dispatch| dispatch.status == "queued")
+        .map(|dispatch| {
+            let provider_bonus = runtime
+                .providers
+                .get(&dispatch.provider_lane_id)
+                .ok()
+                .map(|provider| if provider.routing_mode == "primary" { 0.2 } else { 0.0 })
+                .unwrap_or(0.0);
+            let mission_bonus = mission_alignment_score(&dispatch.intent_summary, &mission_terms);
+            let score = 1.0 + provider_bonus + mission_bonus;
+            let reason = if mission_bonus > 0.0 {
+                "mission_alignment"
+            } else if provider_bonus > 0.0 {
+                "primary_lane_priority"
+            } else {
+                "queued_fallback"
+            };
+            (dispatch.clone(), score, reason.to_string())
+        })
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.dispatched_at.cmp(&right.0.dispatched_at))
+        })
+}
+
 async fn run_latest_dispatch_live_once(
     state: &AppState,
 ) -> Result<DispatchExecutionResponse, (StatusCode, String)> {
-    let (dispatch, provider_lane, provider_prompt, house_root) = {
+    let (dispatch, provider_lane, provider_prompt, house_root, selection_score, selection_reason) = {
         let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
 
-        let latest_dispatch = runtime
-            .dispatches
-            .all()
-            .into_iter()
-            .rev()
-            .find(|dispatch| dispatch.status == "queued")
-            .cloned()
-            .ok_or_else(|| {
+        let (latest_dispatch, selection_score, selection_reason) =
+            select_next_live_dispatch(&runtime).ok_or_else(|| {
                 (
                     StatusCode::BAD_REQUEST,
                     "no queued dispatches available".to_string(),
@@ -1454,6 +1518,8 @@ async fn run_latest_dispatch_live_once(
                 "context_packet_ready": true,
                 "provider": provider_lane.provider.clone(),
                 "model": provider_lane.model.clone(),
+                "selection_score": selection_score,
+                "selection_reason": selection_reason,
             }),
         );
 
@@ -1545,6 +1611,8 @@ async fn run_latest_dispatch_live_once(
             provider_lane,
             provider_prompt,
             state.house_root.clone(),
+            selection_score,
+            selection_reason,
         )
     };
 
@@ -1594,6 +1662,8 @@ async fn run_latest_dispatch_live_once(
                     "provider": provider_lane.provider,
                     "model": provider_lane.model,
                     "adapter": adapter_label,
+                    "selection_score": selection_score,
+                    "selection_reason": selection_reason,
                     "status": "failed",
                     "reason": error,
                 }),
