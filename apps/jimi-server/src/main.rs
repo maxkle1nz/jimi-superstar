@@ -27,7 +27,7 @@ use jimi_kernel::{
     MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
     MemoryCapsuleRecord, MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel,
     SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
-    TurnRecord,
+    TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 use provider_adapter::{provider_adapter_label, resolve_provider_adapter, run_provider_adapter};
@@ -196,9 +196,12 @@ struct AutonomyStatusResponse {
     running: bool,
     cycles: u64,
     completed_dispatches: u64,
+    mission_phase: String,
     current_goal: Option<String>,
     next_actions: Vec<String>,
+    queued_dispatch_count: usize,
     awaiting_approval_count: usize,
+    recommended_next_step: String,
     last_dispatch_id: Option<String>,
     last_intent_summary: Option<String>,
     last_selection_reason: Option<String>,
@@ -640,8 +643,11 @@ async fn context_packet(
     axum::extract::Path(session_id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ContextPacketResponse>, (StatusCode, String)> {
-    let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let session_id = jimi_kernel::SessionId(session_id);
+    let memory_policy = runtime.active_memory_policy().unwrap_or_default();
+    refresh_world_state_cache(&mut runtime, &state.house_root, &memory_policy);
+    persist_runtime(&state, &runtime)?;
     Ok(Json(assemble_context_packet(
         &runtime,
         &session_id,
@@ -772,7 +778,7 @@ fn assemble_context_packet(
         .into_iter()
         .map(|provider| format!("{}:{}", provider.provider, provider.model))
         .collect();
-    let world_state_slice = build_world_state_slice(house_root, &memory_policy);
+    let world_state_slice = build_world_state_slice_from_cache(runtime, house_root, &memory_policy);
 
     ContextPacketResponse {
         session_id: session_id.0.clone(),
@@ -1056,22 +1062,17 @@ fn compact_provider_response(output_text: &str) -> CompactedProviderResponse {
     }
 }
 
-fn build_world_state_slice(
+fn refresh_world_state_cache(
+    runtime: &mut HouseRuntime,
     house_root: &PathBuf,
     memory_policy: &MandalaMemoryPolicy,
-) -> WorldStateSlice {
+) {
     if !memory_policy.allow_world_state {
-        return WorldStateSlice {
-            scope: "disabled".into(),
-            workspace_root: house_root.display().to_string(),
-            workspace_health: "disabled".into(),
-            git_dirty: false,
-            workspace_entry_count: 0,
-            workspace_entries: Vec::new(),
-            changed_files: Vec::new(),
-            running_processes: Vec::new(),
-            observed_at: chrono::Utc::now(),
-        };
+        runtime.world_state_nodes.replace_scope("disabled", Vec::new());
+        runtime
+            .world_state_deltas
+            .replace_scope("disabled", Vec::new());
+        return;
     }
 
     let scope = memory_policy.world_state_scope.trim().to_string();
@@ -1079,8 +1080,6 @@ fn build_world_state_slice(
         scope.as_str(),
         "workspace" | "workspace+process" | "workspace+health"
     );
-    let include_processes = matches!(scope.as_str(), "process" | "workspace+process");
-
     let mut workspace_entries = std::fs::read_dir(house_root)
         .ok()
         .into_iter()
@@ -1105,13 +1104,130 @@ fn build_world_state_slice(
         })
         .collect::<Vec<_>>();
     workspace_entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let workspace_entry_count = workspace_entries.len();
-    if include_workspace {
-        workspace_entries.truncate(memory_policy.world_state_entry_limit.max(1));
+    let observed_at = chrono::Utc::now();
+    let workspace_nodes = if include_workspace {
+        workspace_entries
+            .iter()
+            .map(|entry| WorldStateNodeRecord {
+                node_id: format!("wsnode::{scope}::{}", entry.path),
+                scope: scope.clone(),
+                path: entry.path.clone(),
+                kind: entry.kind.clone(),
+                size_bytes: entry.size_bytes,
+                metadata_hash: format!("{}:{}:{}", entry.kind, entry.size_bytes, entry.path),
+                status: "active".into(),
+                observed_at,
+            })
+            .collect::<Vec<_>>()
     } else {
-        workspace_entries.clear();
+        Vec::new()
+    };
+
+    let changed_files = Command::new("git")
+        .arg("-C")
+        .arg(house_root)
+        .args(["status", "--short"])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToOwned::to_owned)
+                .take(memory_policy.world_state_entry_limit.max(1))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let recent_deltas = changed_files
+        .iter()
+        .map(|line| {
+            let trimmed = line.trim();
+            let (change_kind, path) = trimmed
+                .split_once(' ')
+                .map(|(kind, rest)| (kind.trim().to_string(), rest.trim().to_string()))
+                .unwrap_or_else(|| ("unknown".into(), trimmed.to_string()));
+            WorldStateDeltaRecord {
+                delta_id: format!("wsdelta::{scope}::{trimmed}"),
+                scope: scope.clone(),
+                change_kind: change_kind.clone(),
+                path: path.clone(),
+                summary: format!("{change_kind} {path}"),
+                observed_at,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    runtime
+        .world_state_nodes
+        .replace_scope(&scope, workspace_nodes);
+    runtime
+        .world_state_deltas
+        .replace_scope(&scope, recent_deltas);
+}
+
+fn build_world_state_slice_from_cache(
+    runtime: &HouseRuntime,
+    house_root: &PathBuf,
+    memory_policy: &MandalaMemoryPolicy,
+) -> WorldStateSlice {
+    if !memory_policy.allow_world_state {
+        return WorldStateSlice {
+            scope: "disabled".into(),
+            workspace_root: house_root.display().to_string(),
+            workspace_health: "disabled".into(),
+            git_dirty: false,
+            cache_state: "disabled".into(),
+            indexed_nodes: 0,
+            workspace_entry_count: 0,
+            workspace_entries: Vec::new(),
+            changed_files: Vec::new(),
+            recent_deltas: Vec::new(),
+            running_processes: Vec::new(),
+            observed_at: chrono::Utc::now(),
+        };
     }
 
+    let scope = memory_policy.world_state_scope.trim().to_string();
+    let include_processes = matches!(scope.as_str(), "process" | "workspace+process");
+    let nodes = runtime.world_state_nodes.by_scope(&scope);
+    let deltas = runtime.world_state_deltas.by_scope(&scope);
+    let indexed_nodes = nodes.len();
+    let mut workspace_entries = nodes
+        .into_iter()
+        .map(|node| WorldStateWorkspaceEntry {
+            path: node.path.clone(),
+            kind: node.kind.clone(),
+            size_bytes: node.size_bytes,
+        })
+        .collect::<Vec<_>>();
+    workspace_entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let workspace_entry_count = workspace_entries.len();
+    workspace_entries.truncate(memory_policy.world_state_entry_limit.max(1));
+
+    let recent_deltas = deltas
+        .into_iter()
+        .rev()
+        .take(memory_policy.world_state_entry_limit.max(1))
+        .map(|delta| delta.summary.clone())
+        .collect::<Vec<_>>();
+    let changed_files = recent_deltas.clone();
+    let git_dirty = !recent_deltas.is_empty();
+    let workspace_health = if !house_root.join(".git").exists() {
+        "ungit".to_string()
+    } else if git_dirty {
+        "dirty".to_string()
+    } else {
+        "clean".to_string()
+    };
+    let cache_state = if indexed_nodes == 0 {
+        "cold".to_string()
+    } else if git_dirty {
+        "fresh".to_string()
+    } else {
+        "warm".to_string()
+    };
     let running_processes = if include_processes {
         Command::new("ps")
             .args(["-axo", "pid=,comm="])
@@ -1142,44 +1258,17 @@ fn build_world_state_slice(
         Vec::new()
     };
 
-    let changed_files = Command::new("git")
-        .arg("-C")
-        .arg(house_root)
-        .args(["status", "--short"])
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|stdout| {
-            stdout
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(ToOwned::to_owned)
-                .take(memory_policy.world_state_entry_limit.max(1))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let git_dirty = !changed_files.is_empty();
-    let workspace_health = if !house_root.join(".git").exists() {
-        "ungit".to_string()
-    } else if git_dirty {
-        "dirty".to_string()
-    } else {
-        "clean".to_string()
-    };
-
     WorldStateSlice {
         scope,
         workspace_root: house_root.display().to_string(),
         workspace_health,
         git_dirty,
-        workspace_entry_count: if include_workspace {
-            workspace_entry_count
-        } else {
-            0
-        },
+        cache_state,
+        indexed_nodes,
+        workspace_entry_count,
         workspace_entries,
         changed_files,
+        recent_deltas,
         running_processes,
         observed_at: chrono::Utc::now(),
     }
@@ -1535,6 +1624,8 @@ async fn run_latest_dispatch_live_once(
             }),
         );
 
+        let world_state_policy = runtime.active_memory_policy().unwrap_or_default();
+        refresh_world_state_cache(&mut runtime, &state.house_root, &world_state_policy);
         let packet = assemble_context_packet(&runtime, &running_dispatch.session_id, &state.house_root);
         let provider_prompt = build_provider_prompt(
             &running_dispatch.provider_lane_id,
@@ -1902,21 +1993,27 @@ async fn control_plane_status(State(state): State<AppState>) -> Json<ControlPlan
     Json(build_control_plane_status(&runtime.inventory()))
 }
 
-async fn world_state_status(State(state): State<AppState>) -> Json<WorldStateStatusResponse> {
-    let runtime = state.runtime.lock().expect("runtime lock poisoned");
-    let active_mandala = runtime
+async fn world_state_status(
+    State(state): State<AppState>,
+) -> Result<Json<WorldStateStatusResponse>, (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let active_mandala_id = runtime
         .slots
         .all()
         .into_iter()
         .find_map(|slot| slot.active_mandala_id.as_ref())
-        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok());
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok())
+        .map(|mandala| mandala.self_section.id.clone());
     let memory_policy = runtime.active_memory_policy().unwrap_or_default();
-    Json(WorldStateStatusResponse {
-        active_mandala_id: active_mandala.map(|mandala| mandala.self_section.id.clone()),
+    refresh_world_state_cache(&mut runtime, &state.house_root, &memory_policy);
+    let response = WorldStateStatusResponse {
+        active_mandala_id,
         preferred_scope: memory_policy.world_state_scope.clone(),
         lookup_sources: memory_policy.lookup_sources.clone(),
-        slice: build_world_state_slice(&state.house_root, &memory_policy),
-    })
+        slice: build_world_state_slice_from_cache(&runtime, &state.house_root, &memory_policy),
+    };
+    persist_runtime(&state, &runtime)?;
+    Ok(Json(response))
 }
 
 async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatusResponse> {
@@ -1934,7 +2031,7 @@ async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatus
     })
 }
 
-fn current_mission_state(runtime: &HouseRuntime) -> (Option<String>, Vec<String>, usize) {
+fn current_mission_state(runtime: &HouseRuntime) -> (String, Option<String>, Vec<String>, usize, usize, String) {
     let active_mandala = runtime
         .slots
         .all()
@@ -1945,13 +2042,56 @@ fn current_mission_state(runtime: &HouseRuntime) -> (Option<String>, Vec<String>
     let next_actions = active_mandala
         .map(|mandala| mandala.active_snapshot.next_actions.clone())
         .unwrap_or_default();
+    let queued_dispatch_count = runtime
+        .dispatches
+        .all()
+        .into_iter()
+        .filter(|dispatch| dispatch.status == "queued")
+        .count();
     let awaiting_approval_count = runtime.approvals.pending().len();
-    (current_goal, next_actions, awaiting_approval_count)
+    let mission_phase = if awaiting_approval_count > 0 {
+        "awaiting_approval"
+    } else if queued_dispatch_count > 0 {
+        "advancing"
+    } else if current_goal.as_deref().unwrap_or_default().is_empty() {
+        "unassigned"
+    } else if !next_actions.is_empty() {
+        "ready_for_next_turn"
+    } else {
+        "steady"
+    }
+    .to_string();
+    let recommended_next_step = if awaiting_approval_count > 0 {
+        "review and resolve pending approvals".to_string()
+    } else if queued_dispatch_count > 0 {
+        "let autonomy continue through queued dispatches".to_string()
+    } else if !next_actions.is_empty() {
+        next_actions[0].clone()
+    } else if let Some(goal) = &current_goal {
+        format!("ground the next turn toward: {goal}")
+    } else {
+        "define the next mission".to_string()
+    };
+    (
+        mission_phase,
+        current_goal,
+        next_actions,
+        queued_dispatch_count,
+        awaiting_approval_count,
+        recommended_next_step,
+    )
 }
 
 async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusResponse> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
-    let (current_goal, next_actions, awaiting_approval_count) = current_mission_state(&runtime);
+    let (
+        mission_phase,
+        current_goal,
+        next_actions,
+        queued_dispatch_count,
+        awaiting_approval_count,
+        recommended_next_step,
+    ) = current_mission_state(&runtime);
     drop(runtime);
     let status = state
         .autonomy_status
@@ -1963,9 +2103,12 @@ async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusRe
         running: status.running,
         cycles: status.cycles,
         completed_dispatches: status.completed_dispatches,
+        mission_phase,
         current_goal,
         next_actions,
+        queued_dispatch_count,
         awaiting_approval_count,
+        recommended_next_step,
         last_dispatch_id: status.last_dispatch_id,
         last_intent_summary: status.last_intent_summary,
         last_selection_reason: status.last_selection_reason,
@@ -1978,7 +2121,14 @@ async fn set_autonomy(
     Json(request): Json<SetAutonomyRequest>,
 ) -> Result<Json<AutonomyStatusResponse>, (StatusCode, String)> {
     let runtime = state.runtime.lock().map_err(internal_lock_error)?;
-    let (current_goal, next_actions, awaiting_approval_count) = current_mission_state(&runtime);
+    let (
+        mission_phase,
+        current_goal,
+        next_actions,
+        queued_dispatch_count,
+        awaiting_approval_count,
+        recommended_next_step,
+    ) = current_mission_state(&runtime);
     drop(runtime);
     let mut status = state.autonomy_status.lock().map_err(internal_lock_error)?;
     status.enabled = request.enabled;
@@ -1987,9 +2137,12 @@ async fn set_autonomy(
         running: status.running,
         cycles: status.cycles,
         completed_dispatches: status.completed_dispatches,
+        mission_phase,
         current_goal,
         next_actions,
+        queued_dispatch_count,
         awaiting_approval_count,
+        recommended_next_step,
         last_dispatch_id: status.last_dispatch_id.clone(),
         last_intent_summary: status.last_intent_summary.clone(),
         last_selection_reason: status.last_selection_reason.clone(),
@@ -3762,6 +3915,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['triggers', inventory.resynthesis_triggers ?? 0],
           ['promotions', inventory.memory_promotions ?? 0],
           ['approvals', inventory.approval_requests ?? 0],
+          ['world nodes', inventory.world_state_nodes ?? 0],
+          ['world deltas', inventory.world_state_deltas ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -3941,6 +4096,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">workspace root: ${escapeHtml(slice.workspace_root || 'none')}</div>
             <div class="meta">workspace health: ${escapeHtml(slice.workspace_health || 'unknown')}</div>
             <div class="meta">git dirty: ${escapeHtml(slice.git_dirty ? 'yes' : 'no')}</div>
+            <div class="meta">cache state: ${escapeHtml(slice.cache_state || 'cold')}</div>
+            <div class="meta">indexed nodes: ${escapeHtml(slice.indexed_nodes ?? 0)}</div>
             <div class="meta">workspace entries: ${escapeHtml(slice.workspace_entry_count ?? 0)}</div>
             <div class="meta">processes shown: ${escapeHtml((slice.running_processes || []).length)}</div>
           </div>
@@ -3951,6 +4108,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="card">
             <strong>Changed Files</strong>
             ${((slice.changed_files || []).map(path => `<div class="meta">- ${escapeHtml(path)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Recent Deltas</strong>
+            ${((slice.recent_deltas || []).map(delta => `<div class="meta">- ${escapeHtml(delta)}</div>`).join('')) || '<div class="meta">- none</div>'}
           </div>
           <div class="card">
             <strong>Process Snapshot</strong>
@@ -3966,7 +4127,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const autonomy = state.autonomyStatus;
         autonomyStatusLineEl.textContent = autonomy.enabled
-          ? `autonomy enabled / ${autonomy.current_goal || 'no mission'}`
+          ? `autonomy enabled / ${autonomy.mission_phase || 'steady'}`
           : 'autonomy paused';
         autonomyStatusViewEl.innerHTML = `
           <div class="card">
@@ -3975,9 +4136,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">running: ${escapeHtml(autonomy.running ? 'yes' : 'no')}</div>
             <div class="meta">cycles: ${escapeHtml(autonomy.cycles)}</div>
             <div class="meta">completed dispatches: ${escapeHtml(autonomy.completed_dispatches)}</div>
+            <div class="meta">mission phase: ${escapeHtml(autonomy.mission_phase || 'steady')}</div>
             <div class="meta">current goal: ${escapeHtml(autonomy.current_goal || 'none')}</div>
             <div class="meta">next actions: ${escapeHtml((autonomy.next_actions || []).join(' | ') || 'none')}</div>
+            <div class="meta">queued dispatches: ${escapeHtml(autonomy.queued_dispatch_count ?? 0)}</div>
             <div class="meta">awaiting approvals: ${escapeHtml(autonomy.awaiting_approval_count ?? 0)}</div>
+            <div class="meta">recommended next step: ${escapeHtml(autonomy.recommended_next_step || 'none')}</div>
             <div class="meta">last dispatch: ${escapeHtml(autonomy.last_dispatch_id || 'none')}</div>
             <div class="meta">last intent: ${escapeHtml(autonomy.last_intent_summary || 'none')}</div>
             <div class="meta">selection reason: ${escapeHtml(autonomy.last_selection_reason || 'none')}</div>
@@ -4286,8 +4450,11 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">world scope: ${escapeHtml(packet.world_state_slice?.scope || 'none')}</div>
             <div class="meta">workspace health: ${escapeHtml(packet.world_state_slice?.workspace_health || 'unknown')}</div>
             <div class="meta">git dirty: ${escapeHtml(packet.world_state_slice?.git_dirty ? 'yes' : 'no')}</div>
+            <div class="meta">world cache state: ${escapeHtml(packet.world_state_slice?.cache_state || 'cold')}</div>
+            <div class="meta">indexed world nodes: ${escapeHtml(packet.world_state_slice?.indexed_nodes ?? 0)}</div>
             <div class="meta">world entries: ${escapeHtml(packet.world_state_slice?.workspace_entry_count ?? 0)}</div>
             <div class="meta">changed files: ${escapeHtml((packet.world_state_slice?.changed_files || []).length)}</div>
+            <div class="meta">recent deltas: ${escapeHtml((packet.world_state_slice?.recent_deltas || []).length)}</div>
             <div class="meta">world processes: ${escapeHtml((packet.world_state_slice?.running_processes || []).length)}</div>
             <div class="meta">boot include: ${escapeHtml((packet.memory_policy?.boot_include || []).join(' | ') || 'none')}</div>
             <div class="meta">lookup sources: ${escapeHtml((packet.memory_policy?.lookup_sources || []).join(' | ') || 'none')}</div>

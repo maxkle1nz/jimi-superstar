@@ -9,6 +9,7 @@ use crate::{
     KernelError, LaneId, LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord,
     MemoryPromotionRecord, PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord,
     SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
+    WorldStateDeltaRecord, WorldStateNodeRecord,
 };
 
 #[derive(Debug, Error)]
@@ -203,6 +204,26 @@ impl DurableStore {
               status TEXT NOT NULL,
               created_at TEXT NOT NULL,
               resolved_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS world_state_nodes (
+              node_id TEXT PRIMARY KEY,
+              scope TEXT NOT NULL,
+              path TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL,
+              metadata_hash TEXT NOT NULL,
+              status TEXT NOT NULL,
+              observed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS world_state_deltas (
+              delta_id TEXT PRIMARY KEY,
+              scope TEXT NOT NULL,
+              change_kind TEXT NOT NULL,
+              path TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              observed_at TEXT NOT NULL
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_capsules_fts USING fts5(
@@ -544,6 +565,38 @@ impl DurableStore {
                     approval.status,
                     approval.created_at.to_rfc3339(),
                     approval.resolved_at.map(|dt| dt.to_rfc3339()),
+                ],
+            )?;
+        }
+
+        for node in runtime.world_state_nodes.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO world_state_nodes (node_id, scope, path, kind, size_bytes, metadata_hash, status, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    node.node_id,
+                    node.scope,
+                    node.path,
+                    node.kind,
+                    node.size_bytes as i64,
+                    node.metadata_hash,
+                    node.status,
+                    node.observed_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for delta in runtime.world_state_deltas.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO world_state_deltas (delta_id, scope, change_kind, path, summary, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    delta.delta_id,
+                    delta.scope,
+                    delta.change_kind,
+                    delta.path,
+                    delta.summary,
+                    delta.observed_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -1139,6 +1192,65 @@ impl DurableStore {
                     resolved_at: resolved_at
                         .map(|value| parse_dt(&value))
                         .transpose()?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT node_id, scope, path, kind, size_bytes, metadata_hash, status, observed_at FROM world_state_nodes ORDER BY observed_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?;
+            for row in rows {
+                let (node_id, scope, path, kind, size_bytes, metadata_hash, status, observed_at) =
+                    row?;
+                runtime.world_state_nodes.insert_existing(WorldStateNodeRecord {
+                    node_id,
+                    scope,
+                    path,
+                    kind,
+                    size_bytes: size_bytes as u64,
+                    metadata_hash,
+                    status,
+                    observed_at: parse_dt(&observed_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT delta_id, scope, change_kind, path, summary, observed_at FROM world_state_deltas ORDER BY observed_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            for row in rows {
+                let (delta_id, scope, change_kind, path, summary, observed_at) = row?;
+                runtime.world_state_deltas.insert_existing(WorldStateDeltaRecord {
+                    delta_id,
+                    scope,
+                    change_kind,
+                    path,
+                    summary,
+                    observed_at: parse_dt(&observed_at)?,
                 });
             }
         }

@@ -25,7 +25,8 @@ pub use runtime::{
     MemoryPromotionRecord, MemoryPromotionRegistry, ProviderLaneRecord, ProviderLaneRegistry,
     ResynthesisTriggerRecord, ResynthesisTriggerRegistry, SessionManager, SessionRecord,
     SlotRegistry, SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord,
-    TurnDispatchRegistry, TurnRecord, WorldStateProcessEntry, WorldStateSlice,
+    TurnDispatchRegistry, TurnRecord, WorldStateDeltaRecord, WorldStateDeltaRegistry,
+    WorldStateNodeRecord, WorldStateNodeRegistry, WorldStateProcessEntry, WorldStateSlice,
     WorldStateWorkspaceEntry,
 };
 pub use session::{LaneState, SessionState, TurnState};

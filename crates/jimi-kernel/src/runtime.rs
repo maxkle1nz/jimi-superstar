@@ -175,6 +175,28 @@ pub struct WorldStateWorkspaceEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldStateNodeRecord {
+    pub node_id: String,
+    pub scope: String,
+    pub path: String,
+    pub kind: String,
+    pub size_bytes: u64,
+    pub metadata_hash: String,
+    pub status: String,
+    pub observed_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldStateDeltaRecord {
+    pub delta_id: String,
+    pub scope: String,
+    pub change_kind: String,
+    pub path: String,
+    pub summary: String,
+    pub observed_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldStateProcessEntry {
     pub pid: u32,
     pub command: String,
@@ -186,9 +208,12 @@ pub struct WorldStateSlice {
     pub workspace_root: String,
     pub workspace_health: String,
     pub git_dirty: bool,
+    pub cache_state: String,
+    pub indexed_nodes: usize,
     pub workspace_entry_count: usize,
     pub workspace_entries: Vec<WorldStateWorkspaceEntry>,
     pub changed_files: Vec<String>,
+    pub recent_deltas: Vec<String>,
     pub running_processes: Vec<WorldStateProcessEntry>,
     pub observed_at: chrono::DateTime<Utc>,
 }
@@ -1069,6 +1094,64 @@ impl ApprovalRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct WorldStateNodeRegistry {
+    nodes: BTreeMap<String, WorldStateNodeRecord>,
+}
+
+impl WorldStateNodeRegistry {
+    pub fn all(&self) -> Vec<&WorldStateNodeRecord> {
+        self.nodes.values().collect()
+    }
+
+    pub fn by_scope(&self, scope: &str) -> Vec<&WorldStateNodeRecord> {
+        self.nodes
+            .values()
+            .filter(|node| node.scope == scope)
+            .collect()
+    }
+
+    pub fn replace_scope(&mut self, scope: &str, nodes: Vec<WorldStateNodeRecord>) {
+        self.nodes.retain(|_, node| node.scope != scope);
+        for node in nodes {
+            self.nodes.insert(node.node_id.clone(), node);
+        }
+    }
+
+    pub fn insert_existing(&mut self, node: WorldStateNodeRecord) {
+        self.nodes.insert(node.node_id.clone(), node);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WorldStateDeltaRegistry {
+    deltas: BTreeMap<String, WorldStateDeltaRecord>,
+}
+
+impl WorldStateDeltaRegistry {
+    pub fn all(&self) -> Vec<&WorldStateDeltaRecord> {
+        self.deltas.values().collect()
+    }
+
+    pub fn by_scope(&self, scope: &str) -> Vec<&WorldStateDeltaRecord> {
+        self.deltas
+            .values()
+            .filter(|delta| delta.scope == scope)
+            .collect()
+    }
+
+    pub fn replace_scope(&mut self, scope: &str, deltas: Vec<WorldStateDeltaRecord>) {
+        self.deltas.retain(|_, delta| delta.scope != scope);
+        for delta in deltas {
+            self.deltas.insert(delta.delta_id.clone(), delta);
+        }
+    }
+
+    pub fn insert_existing(&mut self, delta: WorldStateDeltaRecord) {
+        self.deltas.insert(delta.delta_id.clone(), delta);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -1087,6 +1170,8 @@ pub struct HouseInventory {
     pub resynthesis_triggers: usize,
     pub memory_promotions: usize,
     pub approval_requests: usize,
+    pub world_state_nodes: usize,
+    pub world_state_deltas: usize,
 }
 
 #[derive(Debug, Default)]
@@ -1105,6 +1190,8 @@ pub struct HouseRuntime {
     pub resynthesis_triggers: ResynthesisTriggerRegistry,
     pub memory_promotions: MemoryPromotionRegistry,
     pub approvals: ApprovalRegistry,
+    pub world_state_nodes: WorldStateNodeRegistry,
+    pub world_state_deltas: WorldStateDeltaRegistry,
 }
 
 impl HouseRuntime {
@@ -1154,6 +1241,8 @@ impl HouseRuntime {
             resynthesis_triggers: self.resynthesis_triggers.all().len(),
             memory_promotions: self.memory_promotions.all().len(),
             approval_requests: self.approvals.all().len(),
+            world_state_nodes: self.world_state_nodes.all().len(),
+            world_state_deltas: self.world_state_deltas.all().len(),
         }
     }
 
