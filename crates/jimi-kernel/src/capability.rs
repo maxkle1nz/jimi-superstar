@@ -12,6 +12,9 @@ pub enum CapabilityType {
     MemorySource,
     TruthSource,
     UiSurface,
+    MandalaCapsule,
+    SacredShard,
+    PersonalitySlot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

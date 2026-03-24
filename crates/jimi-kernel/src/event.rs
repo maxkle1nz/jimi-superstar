@@ -46,6 +46,10 @@ pub enum EventType {
     EngineSelected,
     EngineDegraded,
     TruthFusionUpdated,
+    MandalaBound,
+    CapsuleInstalled,
+    SlotActivated,
+    ShardSealed,
     ArtifactCreated,
     SystemHealthChanged,
 }
