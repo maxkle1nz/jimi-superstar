@@ -8,12 +8,39 @@ pub enum ProviderAdapterKind {
     Unsupported(String),
 }
 
-impl ProviderAdapterKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            ProviderAdapterKind::CodexCli => "live_codex",
-            ProviderAdapterKind::Unsupported(_) => "unsupported",
-        }
+pub trait ProviderAdapter {
+    fn label(&self) -> &'static str;
+    fn execute(&self, house_root: &PathBuf, provider_prompt: &str) -> Result<String, String>;
+}
+
+#[derive(Debug, Default)]
+struct CodexCliAdapter;
+
+#[derive(Debug, Clone)]
+struct UnsupportedAdapter {
+    provider: String,
+}
+
+impl ProviderAdapter for CodexCliAdapter {
+    fn label(&self) -> &'static str {
+        "live_codex"
+    }
+
+    fn execute(&self, house_root: &PathBuf, provider_prompt: &str) -> Result<String, String> {
+        run_codex_exec(house_root, provider_prompt)
+    }
+}
+
+impl ProviderAdapter for UnsupportedAdapter {
+    fn label(&self) -> &'static str {
+        "unsupported"
+    }
+
+    fn execute(&self, _house_root: &PathBuf, _provider_prompt: &str) -> Result<String, String> {
+        Err(format!(
+            "provider adapter not implemented yet: {}",
+            self.provider
+        ))
     }
 }
 
@@ -30,10 +57,21 @@ pub fn run_provider_adapter(
     provider_prompt: &str,
 ) -> Result<String, String> {
     match adapter {
-        ProviderAdapterKind::CodexCli => run_codex_exec(house_root, provider_prompt),
-        ProviderAdapterKind::Unsupported(provider) => {
-            Err(format!("provider adapter not implemented yet: {provider}"))
+        ProviderAdapterKind::CodexCli => CodexCliAdapter.execute(house_root, provider_prompt),
+        ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
+            provider: provider.clone(),
         }
+        .execute(house_root, provider_prompt),
+    }
+}
+
+pub fn provider_adapter_label(adapter: &ProviderAdapterKind) -> &'static str {
+    match adapter {
+        ProviderAdapterKind::CodexCli => CodexCliAdapter.label(),
+        ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
+            provider: provider.clone(),
+        }
+        .label(),
     }
 }
 

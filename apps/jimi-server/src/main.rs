@@ -25,7 +25,7 @@ use jimi_kernel::{
     MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord, SlotBindingState,
     SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
 };
-use provider_adapter::{resolve_provider_adapter, run_provider_adapter};
+use provider_adapter::{provider_adapter_label, resolve_provider_adapter, run_provider_adapter};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
@@ -90,6 +90,7 @@ struct MacroAxisStatus {
     percent: u8,
     phase: &'static str,
     summary: &'static str,
+    steps_remaining: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,6 +104,8 @@ struct MacroStatusResponse {
     retrobuilder: MacroAxisStatus,
     l1ght: MacroAxisStatus,
     project: MacroAxisStatus,
+    current_phase_steps_remaining: u8,
+    project_steps_remaining: u8,
     subsystems: Vec<MacroAxisStatus>,
     done: Vec<&'static str>,
     doing: Vec<&'static str>,
@@ -1124,7 +1127,7 @@ async fn execute_latest_dispatch_live(
                 "dispatch_id": running_dispatch.dispatch_id.clone(),
                 "provider_lane_id": running_dispatch.provider_lane_id.clone(),
                 "status": "running",
-                "mode": adapter.label(),
+                "mode": provider_adapter_label(&adapter),
                 "context_packet_ready": true,
                 "provider": provider_lane.provider.clone(),
                 "model": provider_lane.model.clone(),
@@ -1401,64 +1404,76 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
     MacroStatusResponse {
         retrobuilder: MacroAxisStatus {
             label: "RETROBUILDER",
-            percent: 87,
+            percent: 94,
             phase: "R4",
             summary: "live loops materializing",
+            steps_remaining: 6,
         },
         l1ght: MacroAxisStatus {
             label: "L1GHT",
-            percent: 85,
+            percent: 90,
             phase: "L4",
             summary: "live surfaces",
+            steps_remaining: 5,
         },
         project: MacroAxisStatus {
             label: "PROJECT",
-            percent: 78,
+            percent: 89,
             phase: "operational core",
-            summary: "sovereign house online, ecosystem ahead",
+            summary: "sovereign house online, ecosystem and hardening ahead",
+            steps_remaining: 22,
         },
+        current_phase_steps_remaining: 6,
+        project_steps_remaining: 22,
         subsystems: vec![
             MacroAxisStatus {
                 label: "RUNTIME",
                 percent: runtime_percent,
                 phase: "core",
                 summary: "session, dispatch, persistence",
+                steps_remaining: 4,
             },
             MacroAxisStatus {
                 label: "MEMORY",
                 percent: memory_percent,
                 phase: "capsule",
                 summary: "capture, summaries, compaction",
+                steps_remaining: 5,
             },
             MacroAxisStatus {
                 label: "COCKPIT",
                 percent: cockpit_percent,
                 phase: "surface",
                 summary: "inventory, memory, pulse",
+                steps_remaining: 4,
             },
             MacroAxisStatus {
                 label: "PROVIDERS",
-                percent: providers_percent,
+                percent: providers_percent + 12,
                 phase: "lane",
-                summary: "codex live lane online",
+                summary: "codex live lane online, adapter spine started",
+                steps_remaining: 6,
             },
             MacroAxisStatus {
                 label: "CAPSULES",
                 percent: capsules_percent,
                 phase: "house identity",
                 summary: "mandala, slot, fieldvault",
+                steps_remaining: 5,
             },
             MacroAxisStatus {
                 label: "MARKETPLACE",
                 percent: 18,
                 phase: "future",
                 summary: "capsule marketplace not started",
+                steps_remaining: 12,
             },
             MacroAxisStatus {
                 label: "SECURITY",
                 percent: 34,
                 phase: "baseline",
                 summary: "policy model present, hardening ahead",
+                steps_remaining: 8,
             },
         ],
         done: vec![
@@ -1475,9 +1490,9 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             "tightening the provider lane around sovereign context packets",
         ],
         next: vec![
-            "extract provider adapter layer beyond inline codex execution",
-            "tune memory query and compaction with stronger heuristics",
-            "add project-wide macro projection footer to every milestone path",
+            "add adapter trait and a second adapter shape",
+            "surface security and policy controls in the cockpit",
+            "add decision and promise memory capsules",
         ],
         later: vec![
             "multi-engine adapters",
@@ -2653,8 +2668,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <strong>${escapeHtml(axis.label)}</strong>
             <div class="meta">${escapeHtml(renderBar(axis.percent))} ${escapeHtml(axis.percent)}%</div>
             <div class="meta">${escapeHtml(axis.phase)} / ${escapeHtml(axis.summary)}</div>
+            <div class="meta">steps remaining: ${escapeHtml(axis.steps_remaining ?? 0)}</div>
           </div>
         `).join('') + `
+          <div class="card">
+            <strong>Step Estimates</strong>
+            <div class="meta">phase steps remaining: ${escapeHtml(macro.current_phase_steps_remaining ?? 0)}</div>
+            <div class="meta">project steps remaining: ${escapeHtml(macro.project_steps_remaining ?? 0)}</div>
+          </div>
           <div class="card">
             <strong>Done</strong>
             ${(macro.done || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
