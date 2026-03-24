@@ -1381,29 +1381,78 @@ fn score_capsule_for_query(capsule: &MemoryCapsuleRecord, lowered_query: &str) -
         "warm" => 0.08,
         _ => 0.03,
     };
+    let role_bonus = match capsule.role.as_str() {
+        "operator" => 0.07,
+        "distiller" => 0.05,
+        "assistant" => 0.04,
+        _ => 0.02,
+    };
     let content_lower = capsule.content.to_lowercase();
     let intent_lower = capsule
         .intent_summary
         .as_ref()
         .map(|value| value.to_lowercase())
         .unwrap_or_default();
+    let kind_bonus = match intent_lower.as_str() {
+        "conversation/directive" => 0.12,
+        "conversation/decision" => 0.11,
+        "conversation/promise" => 0.1,
+        "conversation/episode" => 0.08,
+        "conversation/transcript" => 0.04,
+        _ => 0.0,
+    };
     let query_bonus = if lowered_query.is_empty() {
         0.0
     } else {
-        let content_match = if content_lower.contains(lowered_query) {
+        let exact_content_match = if content_lower.contains(lowered_query) {
             0.25
         } else {
             0.0
         };
-        let intent_match = if intent_lower.contains(lowered_query) {
-            0.18
+        let exact_intent_match = if intent_lower.contains(lowered_query) {
+            0.22
         } else {
             0.0
         };
-        content_match + intent_match
+        let terms = lowered_query
+            .split_whitespace()
+            .filter(|term| !term.is_empty())
+            .collect::<Vec<_>>();
+        let content_term_hits = terms
+            .iter()
+            .filter(|term| content_lower.contains(**term))
+            .count();
+        let intent_term_hits = terms
+            .iter()
+            .filter(|term| intent_lower.contains(**term))
+            .count();
+        let term_overlap_bonus = if terms.is_empty() {
+            0.0
+        } else {
+            ((content_term_hits as f32) * 0.04) + ((intent_term_hits as f32) * 0.05)
+        };
+        let directive_hint_bonus = if terms.iter().any(|term| {
+            matches!(
+                *term,
+                "directive" | "decision" | "promise" | "goal" | "next" | "action"
+            )
+        }) && matches!(
+            intent_lower.as_str(),
+            "conversation/directive" | "conversation/decision" | "conversation/promise"
+        ) {
+            0.1
+        } else {
+            0.0
+        };
+        exact_content_match + exact_intent_match + term_overlap_bonus + directive_hint_bonus
     };
 
-    capsule.relevance_score + (capsule.confidence_level * 0.2) + band_bonus + query_bonus
+    capsule.relevance_score
+        + (capsule.confidence_level * 0.2)
+        + band_bonus
+        + role_bonus
+        + kind_bonus
+        + query_bonus
 }
 
 #[cfg(test)]
