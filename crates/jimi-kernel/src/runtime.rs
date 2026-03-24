@@ -82,6 +82,28 @@ pub struct CapsulePackageRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapsuleImportRecord {
+    pub import_id: String,
+    pub package_id: String,
+    pub source_origin: String,
+    pub source_path: String,
+    pub import_status: String,
+    pub package_digest: String,
+    pub imported_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapsuleExportRecord {
+    pub export_id: String,
+    pub package_id: String,
+    pub capsule_id: String,
+    pub target_path: String,
+    pub export_status: String,
+    pub package_digest: String,
+    pub exported_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderLaneRecord {
     pub provider_lane_id: String,
     pub provider: String,
@@ -566,6 +588,80 @@ impl CapsulePackageRegistry {
 
     pub fn insert_existing(&mut self, package: CapsulePackageRecord) {
         self.packages.insert(package.package_id.clone(), package);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CapsuleImportRegistry {
+    imports: BTreeMap<String, CapsuleImportRecord>,
+}
+
+impl CapsuleImportRegistry {
+    pub fn record(
+        &mut self,
+        package_id: impl Into<String>,
+        source_origin: impl Into<String>,
+        source_path: impl Into<String>,
+        import_status: impl Into<String>,
+        package_digest: impl Into<String>,
+    ) -> CapsuleImportRecord {
+        let record = CapsuleImportRecord {
+            import_id: format!("import_{}", Uuid::now_v7()),
+            package_id: package_id.into(),
+            source_origin: source_origin.into(),
+            source_path: source_path.into(),
+            import_status: import_status.into(),
+            package_digest: package_digest.into(),
+            imported_at: Utc::now(),
+        };
+        self.imports
+            .insert(record.import_id.clone(), record.clone());
+        record
+    }
+
+    pub fn all(&self) -> Vec<&CapsuleImportRecord> {
+        self.imports.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, record: CapsuleImportRecord) {
+        self.imports.insert(record.import_id.clone(), record);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CapsuleExportRegistry {
+    exports: BTreeMap<String, CapsuleExportRecord>,
+}
+
+impl CapsuleExportRegistry {
+    pub fn record(
+        &mut self,
+        package_id: impl Into<String>,
+        capsule_id: impl Into<String>,
+        target_path: impl Into<String>,
+        export_status: impl Into<String>,
+        package_digest: impl Into<String>,
+    ) -> CapsuleExportRecord {
+        let record = CapsuleExportRecord {
+            export_id: format!("export_{}", Uuid::now_v7()),
+            package_id: package_id.into(),
+            capsule_id: capsule_id.into(),
+            target_path: target_path.into(),
+            export_status: export_status.into(),
+            package_digest: package_digest.into(),
+            exported_at: Utc::now(),
+        };
+        self.exports
+            .insert(record.export_id.clone(), record.clone());
+        record
+    }
+
+    pub fn all(&self) -> Vec<&CapsuleExportRecord> {
+        self.exports.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, record: CapsuleExportRecord) {
+        self.exports.insert(record.export_id.clone(), record);
     }
 }
 
@@ -1334,6 +1430,8 @@ pub struct HouseInventory {
     pub mandalas: usize,
     pub capsules: usize,
     pub capsule_packages: usize,
+    pub capsule_imports: usize,
+    pub capsule_exports: usize,
     pub slots: usize,
     pub fieldvault_artifacts: usize,
     pub provider_lanes: usize,
@@ -1356,6 +1454,8 @@ pub struct HouseRuntime {
     pub mandalas: MandalaRegistry,
     pub capsules: CapsuleRegistry,
     pub capsule_packages: CapsulePackageRegistry,
+    pub capsule_imports: CapsuleImportRegistry,
+    pub capsule_exports: CapsuleExportRegistry,
     pub slots: SlotRegistry,
     pub fieldvault: FieldVaultRuntime,
     pub providers: ProviderLaneRegistry,
@@ -1409,6 +1509,8 @@ impl HouseRuntime {
             mandalas: self.mandalas.all().len(),
             capsules: self.capsules.all().len(),
             capsule_packages: self.capsule_packages.all().len(),
+            capsule_imports: self.capsule_imports.all().len(),
+            capsule_exports: self.capsule_exports.all().len(),
             slots: self.slots.all().len(),
             fieldvault_artifacts: self.fieldvault.all().len(),
             provider_lanes: self.providers.all().len(),

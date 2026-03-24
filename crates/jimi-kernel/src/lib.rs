@@ -19,16 +19,17 @@ pub use mandala::{
     MandalaSelf, MandalaSkillPack, MandalaStableMemory, SacredShard,
 };
 pub use runtime::{
-    ApprovalRegistry, ApprovalRequestRecord, CapsulePackageRecord, CapsulePackageRegistry,
-    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime, KernelError, LaneRecord, MandalaRegistry,
-    MemoryBridgeRecord, MemoryBridgeRegistry, MemoryCapsuleRecord, MemoryCapsuleRegistry,
-    MemoryPromotionRecord, MemoryPromotionRegistry, ProviderLaneRecord, ProviderLaneRegistry,
-    ResynthesisTriggerRecord, ResynthesisTriggerRegistry, SessionManager, SessionRecord,
-    SlotRegistry, SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord,
-    TurnDispatchRegistry, TurnRecord, WorldStateDeltaRecord, WorldStateDeltaRegistry,
-    WorldStateNodeRecord, WorldStateNodeRegistry, WorldStateProcessEntry,
-    WorldStateRelationRecord, WorldStateRelationRegistry, WorldStateSlice,
-    WorldStateWorkspaceEntry,
+    ApprovalRegistry, ApprovalRequestRecord, CapsuleExportRecord, CapsuleExportRegistry,
+    CapsuleImportRecord, CapsuleImportRegistry, CapsulePackageRecord, CapsulePackageRegistry,
+    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime,
+    KernelError, LaneRecord, MandalaRegistry, MemoryBridgeRecord, MemoryBridgeRegistry,
+    MemoryCapsuleRecord, MemoryCapsuleRegistry, MemoryPromotionRecord, MemoryPromotionRegistry,
+    ProviderLaneRecord, ProviderLaneRegistry, ResynthesisTriggerRecord,
+    ResynthesisTriggerRegistry, SessionManager, SessionRecord, SlotRegistry,
+    SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord, TurnDispatchRegistry,
+    TurnRecord, WorldStateDeltaRecord, WorldStateDeltaRegistry, WorldStateNodeRecord,
+    WorldStateNodeRegistry, WorldStateProcessEntry, WorldStateRelationRecord,
+    WorldStateRelationRegistry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};

@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     net::SocketAddr,
     path::PathBuf,
     process::Command,
@@ -21,8 +22,9 @@ use axum::{
     routing::{get, post},
 };
 use jimi_kernel::{
-    ActorRef, ApprovalRequestRecord, DurableStore, EventEnvelope, EventType, FieldVaultArtifact,
-    HouseInventory, HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy,
+    ActorRef, ApprovalRequestRecord, CapsuleExportRecord, CapsuleImportRecord, DurableStore,
+    EventEnvelope, EventType, FieldVaultArtifact, HouseInventory, HouseRuntime,
+    MandalaActiveSnapshot, MandalaCapabilityPolicy,
     MandalaCapsuleContract, MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy,
     MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
     CapsulePackageRecord, MemoryCapsuleRecord, MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel,
@@ -205,6 +207,28 @@ struct MarketplaceStatusResponse {
     installable_entries: usize,
     trusted_entries: usize,
     entries: Vec<CapsulePackageRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CapsuleImportsResponse {
+    imports: Vec<CapsuleImportRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CapsuleExportsResponse {
+    exports: Vec<CapsuleExportRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CapsuleImportDemoResponse {
+    package: CapsulePackageRecord,
+    import_record: CapsuleImportRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct CapsuleExportResponse {
+    package: CapsulePackageRecord,
+    export_record: CapsuleExportRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -450,6 +474,8 @@ async fn main() {
         )
         .route("/capsules", get(list_capsules))
         .route("/capsule-packages", get(list_capsule_packages))
+        .route("/capsule-imports", get(list_capsule_imports))
+        .route("/capsule-exports", get(list_capsule_exports))
         .route(
             "/capsule-packages/{package_id}/preview",
             get(capsule_package_preview),
@@ -461,6 +487,10 @@ async fn main() {
         .route(
             "/capsule-packages/{package_id}/install-request",
             post(request_capsule_install),
+        )
+        .route(
+            "/capsule-packages/{package_id}/export",
+            post(export_capsule_package),
         )
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
@@ -481,6 +511,7 @@ async fn main() {
         .route("/approvals/{approval_id}/grant", post(grant_approval))
         .route("/approvals/{approval_id}/deny", post(deny_approval))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
+        .route("/bootstrap/import-demo-capsule", post(import_demo_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
         .route(
@@ -2328,6 +2359,30 @@ async fn list_capsule_packages(
     Json(runtime.capsule_packages.all().into_iter().cloned().collect())
 }
 
+async fn list_capsule_imports(State(state): State<AppState>) -> Json<CapsuleImportsResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(CapsuleImportsResponse {
+        imports: runtime
+            .capsule_imports
+            .all()
+            .into_iter()
+            .cloned()
+            .collect(),
+    })
+}
+
+async fn list_capsule_exports(State(state): State<AppState>) -> Json<CapsuleExportsResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(CapsuleExportsResponse {
+        exports: runtime
+            .capsule_exports
+            .all()
+            .into_iter()
+            .cloned()
+            .collect(),
+    })
+}
+
 async fn capsule_package_preview(
     Path(package_id): Path<String>,
     State(state): State<AppState>,
@@ -2499,6 +2554,82 @@ async fn request_capsule_install(
         Json(CapsuleInstallRequestResponse {
             package: updated_package,
             approval,
+        }),
+    ))
+}
+
+async fn export_capsule_package(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleExportResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    let export_dir = state.house_root.join("exports");
+    fs::create_dir_all(&export_dir).map_err(internal_fs_error)?;
+    let export_path = export_dir.join(format!("{}.capsule.json", package.package_id));
+    let export_payload = serde_json::json!({
+        "package_id": package.package_id,
+        "capsule_id": package.capsule_id,
+        "mandala_id": package.mandala_id,
+        "display_name": package.display_name,
+        "creator": package.creator,
+        "source_origin": package.source_origin,
+        "package_digest": package.package_digest,
+        "trust_level": package.trust_level,
+        "install_status": package.install_status,
+    });
+    fs::write(
+        &export_path,
+        serde_json::to_string_pretty(&export_payload).map_err(internal_serde_error)?,
+    )
+    .map_err(internal_fs_error)?;
+
+    let export_record = runtime.capsule_exports.record(
+        package.package_id.clone(),
+        package.capsule_id.clone(),
+        export_path.display().to_string(),
+        "completed",
+        package.package_digest.clone(),
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.marketplace".into(),
+        },
+        SubjectRef {
+            subject_type: "capsule_package".into(),
+            subject_id: package.package_id.clone(),
+        },
+        EventType::CapsuleExportCompleted,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": package.package_id,
+            "capsule_id": package.capsule_id,
+            "export_id": export_record.export_id,
+            "target_path": export_record.target_path,
+            "export_status": export_record.export_status,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+    Ok((
+        StatusCode::OK,
+        Json(CapsuleExportResponse {
+            package,
+            export_record,
         }),
     ))
 }
@@ -3528,6 +3659,93 @@ async fn bootstrap_core_capsule(
     ))
 }
 
+async fn import_demo_capsule(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleImportDemoResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+    let mandala_id = "mandala.echo.scribe".to_string();
+    let capsule_id = "capsule.echo.scribe.v1".to_string();
+    let package_id = "package.echo.scribe.v1".to_string();
+
+    if runtime.mandalas.get(&mandala_id).is_err() {
+        runtime.mandalas.install(sample_external_mandala());
+    }
+
+    if runtime.capsules.get(&capsule_id).is_err() {
+        runtime
+            .capsules
+            .install(capsule_id.clone(), mandala_id.clone(), 1, "marketplace.demo");
+    }
+
+    let package = if let Ok(existing) = runtime.capsule_packages.get(&package_id) {
+        existing.clone()
+    } else {
+        runtime.capsule_packages.register(
+            package_id.clone(),
+            capsule_id.clone(),
+            mandala_id.clone(),
+            1,
+            "Echo Scribe",
+            "jimi.market.demo",
+            "marketplace.demo",
+            "digest.echo.scribe.v1",
+            "unverified",
+            "imported",
+        )
+    };
+
+    let import_record = runtime.capsule_imports.record(
+        package.package_id.clone(),
+        "marketplace.demo",
+        state
+            .house_root
+            .join("imports/echo-scribe-demo.capsule.json")
+            .display()
+            .to_string(),
+        "imported",
+        package.package_digest.clone(),
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.marketplace".into(),
+        },
+        SubjectRef {
+            subject_type: "capsule_package".into(),
+            subject_id: package.package_id.clone(),
+        },
+        EventType::CapsuleMarketplaceListed,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": package.package_id,
+            "capsule_id": package.capsule_id,
+            "import_id": import_record.import_id,
+            "source_origin": import_record.source_origin,
+            "trust_level": package.trust_level,
+            "install_status": package.install_status,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CapsuleImportDemoResponse {
+            package,
+            import_record,
+        }),
+    ))
+}
+
 async fn bootstrap_core_artifact(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ArtifactBootstrapResponse>), (StatusCode, String)> {
@@ -3795,6 +4013,14 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
 }
 
 fn internal_store_error(error: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+}
+
+fn internal_fs_error(error: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+}
+
+fn internal_serde_error(error: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
@@ -4273,6 +4499,82 @@ fn sample_core_mandala() -> MandalaManifest {
     }
 }
 
+fn sample_external_mandala() -> MandalaManifest {
+    MandalaManifest {
+        manifest_version: "mandala/v1".into(),
+        kind: "mandala".into(),
+        generated_at: 1_774_771_200.0,
+        agent_version: 1,
+        self_section: MandalaSelf {
+            id: "mandala.echo.scribe".into(),
+            role: "scribe".into(),
+            template_soul: "echo-scribe".into(),
+            execution_role: Some("capsule-guest".into()),
+            specialization: Some("memory-capture-and-closure".into()),
+            tone: Some("calm-structured".into()),
+            canonical: false,
+            boundaries: Default::default(),
+            tags: vec!["external".into(), "marketplace".into(), "scribe".into()],
+        },
+        execution_policy: MandalaExecutionPolicy {
+            body: "Capture useful decisions and shape them into portable memory artifacts.".into(),
+            execution_lane: "guest".into(),
+            preferred_provider: "anthropic".into(),
+            preferred_model: "claude-sonnet".into(),
+            reasoning_effort: Some("medium".into()),
+            use_session_pool: false,
+            allow_provider_override: true,
+            capabilities: vec!["memory.runtime".into(), "event.stream".into()],
+        },
+        capability_policy: MandalaCapabilityPolicy {
+            declared: vec!["capsule.install".into(), "memory.capture".into()],
+            required: vec!["memory.runtime".into()],
+            optional: vec!["provider.claude".into(), "fieldvault.bind".into()],
+        },
+        memory_policy: MandalaMemoryPolicy {
+            boot_include: vec!["stable_memory".into(), "active_snapshot".into()],
+            lookup_sources: vec!["past".into(), "vault".into()],
+            hot_context_limit: 4,
+            relevant_context_limit: 5,
+            promotion_confidence_threshold: 0.9,
+            promote_to_stable_memory: true,
+            allow_fieldvault_sealing: true,
+            seal_privacy_classes: vec!["sealed_candidate".into()],
+            world_state_scope: "workspace".into(),
+            world_state_entry_limit: 4,
+            world_state_process_limit: 2,
+            allow_world_state: false,
+        },
+        stable_memory: MandalaStableMemory::default(),
+        active_snapshot: MandalaActiveSnapshot {
+            current_goal: "Offer a portable capsule example for marketplace install and export.".into(),
+            active_decisions: vec!["Marketplace capsules remain under house sovereignty.".into()],
+            blockers: Vec::new(),
+            next_actions: vec![
+                "Preview install impact before activation.".into(),
+                "Export a portable capsule bundle when trust is acceptable.".into(),
+            ],
+            hot_context: vec!["marketplace".into(), "capsule".into()],
+            snapshot: Default::default(),
+        },
+        refs: MandalaRefs::default(),
+        projection: MandalaProjection {
+            projection_kind: "capsule-guest".into(),
+            requested_role: "scribe".into(),
+            template_soul: "echo-scribe".into(),
+            execution_role: Some("capsule-guest".into()),
+            default_body: "Act as a portable marketplace capsule under house policy.".into(),
+            lineage: vec!["marketplace".into(), "guest".into()],
+            autoevolve: false,
+        },
+        ownership: None,
+        capsule_contract: Some(MandalaCapsuleContract::default()),
+        skill_packs: Vec::new(),
+        sacred_shards: Vec::new(),
+        metadata: Default::default(),
+    }
+}
+
 const COCKPIT_HTML: &str = r#"<!doctype html>
 <html lang="en">
   <head>
@@ -4591,6 +4893,9 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="panel">
             <h2>Marketplace Shell</h2>
             <div class="small">Local capsule catalog for discovery, trust comparison, and install intent.</div>
+            <div class="action-row">
+              <button onclick="importDemoCapsule()">Import Demo Capsule</button>
+            </div>
             <div class="list" id="marketplace-view"></div>
           </div>
 
@@ -4943,6 +5248,11 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <div class="meta">source: ${escapeHtml(entry.source_origin)}</div>
               <div class="meta">trust: ${escapeHtml(entry.trust_level)}</div>
               <div class="meta">install status: ${escapeHtml(entry.install_status)}</div>
+              <div class="actions">
+                <button onclick="previewCapsulePackage('${escapeHtml(entry.package_id)}')">Preview</button>
+                <button onclick="requestCapsuleInstall('${escapeHtml(entry.package_id)}')">Install</button>
+                <button onclick="exportCapsulePackage('${escapeHtml(entry.package_id)}')">Export</button>
+              </div>
             </div>
           `).join('') : '<div class="empty">No marketplace entries yet.</div>'}
         `;
@@ -5742,6 +6052,42 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshEvents()
         ]);
         await previewCapsulePackage(packageId);
+      }
+
+      async function importDemoCapsule() {
+        const res = await fetch('/bootstrap/import-demo-capsule', { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to import demo capsule');
+        }
+        const result = await res.json();
+        await Promise.all([
+          refreshCapsules(),
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(result.package.package_id);
+      }
+
+      async function exportCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for export');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/export`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to export capsule package');
+        }
+        await Promise.all([
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshEvents()
+        ]);
       }
 
       async function refreshSlots() {

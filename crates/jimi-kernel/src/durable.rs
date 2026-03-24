@@ -5,11 +5,12 @@ use rusqlite::{Connection, params};
 use thiserror::Error;
 
 use crate::{
-    ApprovalRequestRecord, CapsulePackageRecord, CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime,
-    KernelError, LaneId, LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord,
-    MemoryPromotionRecord, PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord,
-    SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
-    WorldStateDeltaRecord, WorldStateNodeRecord, WorldStateRelationRecord,
+    ApprovalRequestRecord, CapsuleExportRecord, CapsuleImportRecord, CapsulePackageRecord,
+    CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
+    LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord, MemoryPromotionRecord,
+    PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord, SessionId, SessionRecord,
+    SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord, WorldStateDeltaRecord,
+    WorldStateNodeRecord, WorldStateRelationRecord,
 };
 
 #[derive(Debug, Error)]
@@ -107,6 +108,26 @@ impl DurableStore {
               trust_level TEXT NOT NULL,
               install_status TEXT NOT NULL,
               installed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS capsule_imports (
+              import_id TEXT PRIMARY KEY,
+              package_id TEXT NOT NULL,
+              source_origin TEXT NOT NULL,
+              source_path TEXT NOT NULL,
+              import_status TEXT NOT NULL,
+              package_digest TEXT NOT NULL,
+              imported_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS capsule_exports (
+              export_id TEXT PRIMARY KEY,
+              package_id TEXT NOT NULL,
+              capsule_id TEXT NOT NULL,
+              target_path TEXT NOT NULL,
+              export_status TEXT NOT NULL,
+              package_digest TEXT NOT NULL,
+              exported_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS slots (
@@ -431,6 +452,38 @@ impl DurableStore {
                     package.trust_level,
                     package.install_status,
                     package.installed_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for record in runtime.capsule_imports.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO capsule_imports (import_id, package_id, source_origin, source_path, import_status, package_digest, imported_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    record.import_id,
+                    record.package_id,
+                    record.source_origin,
+                    record.source_path,
+                    record.import_status,
+                    record.package_digest,
+                    record.imported_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for record in runtime.capsule_exports.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO capsule_exports (export_id, package_id, capsule_id, target_path, export_status, package_digest, exported_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    record.export_id,
+                    record.package_id,
+                    record.capsule_id,
+                    record.target_path,
+                    record.export_status,
+                    record.package_digest,
+                    record.exported_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -897,6 +950,80 @@ impl DurableStore {
                     trust_level,
                     install_status,
                     installed_at: parse_dt(&installed_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT import_id, package_id, source_origin, source_path, import_status, package_digest, imported_at FROM capsule_imports",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    import_id,
+                    package_id,
+                    source_origin,
+                    source_path,
+                    import_status,
+                    package_digest,
+                    imported_at,
+                ) = row?;
+                runtime.capsule_imports.insert_existing(CapsuleImportRecord {
+                    import_id,
+                    package_id,
+                    source_origin,
+                    source_path,
+                    import_status,
+                    package_digest,
+                    imported_at: parse_dt(&imported_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT export_id, package_id, capsule_id, target_path, export_status, package_digest, exported_at FROM capsule_exports",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    export_id,
+                    package_id,
+                    capsule_id,
+                    target_path,
+                    export_status,
+                    package_digest,
+                    exported_at,
+                ) = row?;
+                runtime.capsule_exports.insert_existing(CapsuleExportRecord {
+                    export_id,
+                    package_id,
+                    capsule_id,
+                    target_path,
+                    export_status,
+                    package_digest,
+                    exported_at: parse_dt(&exported_at)?,
                 });
             }
         }

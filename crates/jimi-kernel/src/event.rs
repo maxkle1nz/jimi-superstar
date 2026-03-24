@@ -49,6 +49,8 @@ pub enum EventType {
     MandalaBound,
     MandalaPolicyUpdated,
     CapsuleInstalled,
+    CapsuleExportCompleted,
+    CapsuleMarketplaceListed,
     SlotActivated,
     ShardSealed,
     ArtifactCreated,
