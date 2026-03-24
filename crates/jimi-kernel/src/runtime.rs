@@ -154,6 +154,29 @@ pub struct MemoryPromotionRecord {
     pub created_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldStateWorkspaceEntry {
+    pub path: String,
+    pub kind: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldStateProcessEntry {
+    pub pid: u32,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldStateSlice {
+    pub scope: String,
+    pub workspace_root: String,
+    pub workspace_entry_count: usize,
+    pub workspace_entries: Vec<WorldStateWorkspaceEntry>,
+    pub running_processes: Vec<WorldStateProcessEntry>,
+    pub observed_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,

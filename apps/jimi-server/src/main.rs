@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     net::SocketAddr,
     path::PathBuf,
+    process::Command,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -25,6 +26,7 @@ use jimi_kernel::{
     MandalaSelf, MandalaStableMemory, MemoryBridgeRecord, MemoryCapsuleRecord,
     MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord, SlotBindingState,
     SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
+    WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 use provider_adapter::{provider_adapter_label, resolve_provider_adapter, run_provider_adapter};
 use serde::{Deserialize, Serialize};
@@ -163,6 +165,14 @@ struct SecurityStatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct WorldStateStatusResponse {
+    active_mandala_id: Option<String>,
+    preferred_scope: String,
+    lookup_sources: Vec<String>,
+    slice: WorldStateSlice,
+}
+
+#[derive(Debug, Serialize)]
 struct AutonomyStatusResponse {
     enabled: bool,
     running: bool,
@@ -269,6 +279,7 @@ struct ContextPacketResponse {
     active_snapshot: Option<MandalaActiveSnapshot>,
     query_seed: String,
     providers: Vec<String>,
+    world_state_slice: WorldStateSlice,
 }
 
 #[tokio::main]
@@ -335,6 +346,7 @@ async fn main() {
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
+        .route("/status/world-state", get(world_state_status))
         .route("/status/distiller", get(distiller_status))
         .route("/status/autonomy", get(autonomy_status))
         .route("/autonomy", post(set_autonomy))
@@ -588,12 +600,17 @@ async fn context_packet(
 ) -> Result<Json<ContextPacketResponse>, (StatusCode, String)> {
     let runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let session_id = jimi_kernel::SessionId(session_id);
-    Ok(Json(assemble_context_packet(&runtime, &session_id)))
+    Ok(Json(assemble_context_packet(
+        &runtime,
+        &session_id,
+        &state.house_root,
+    )))
 }
 
 fn assemble_context_packet(
     runtime: &HouseRuntime,
     session_id: &jimi_kernel::SessionId,
+    house_root: &PathBuf,
 ) -> ContextPacketResponse {
     let memory_policy = runtime.active_memory_policy().unwrap_or_default();
     let active_mandala_id = runtime
@@ -713,6 +730,7 @@ fn assemble_context_packet(
         .into_iter()
         .map(|provider| format!("{}:{}", provider.provider, provider.model))
         .collect();
+    let world_state_slice = build_world_state_slice(house_root);
 
     ContextPacketResponse {
         session_id: session_id.0.clone(),
@@ -731,6 +749,7 @@ fn assemble_context_packet(
         active_snapshot,
         query_seed,
         providers,
+        world_state_slice,
     }
 }
 
@@ -766,6 +785,20 @@ fn build_provider_prompt(
                 capsule.room_id, capsule.session_id.0, capsule.content
             )
         })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let world_state_context = packet
+        .world_state_slice
+        .workspace_entries
+        .iter()
+        .map(|entry| format!("- [{}:{}] {}", entry.kind, entry.size_bytes, entry.path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let process_context = packet
+        .world_state_slice
+        .running_processes
+        .iter()
+        .map(|process| format!("- pid={} {}", process.pid, process.command))
         .collect::<Vec<_>>()
         .join("\n");
     let summaries = packet
@@ -820,6 +853,9 @@ fn build_provider_prompt(
             "Relevant memory:\n{relevant_context}\n\n",
             "Room memory:\n{room_relevant_context}\n\n",
             "House memory:\n{global_relevant_context}\n\n",
+            "World state root: {workspace_root}\n",
+            "World state entries:\n{world_state_context}\n\n",
+            "Running processes:\n{process_context}\n\n",
             "Summaries:\n{summaries}\n\n",
             "Return only the answer for this turn. Do not explain the packet."
         ),
@@ -884,6 +920,17 @@ fn build_provider_prompt(
         } else {
             global_relevant_context
         },
+        workspace_root = packet.world_state_slice.workspace_root,
+        world_state_context = if world_state_context.is_empty() {
+            "- none".into()
+        } else {
+            world_state_context
+        },
+        process_context = if process_context.is_empty() {
+            "- none".into()
+        } else {
+            process_context
+        },
         summaries = if summaries.is_empty() {
             "- none".into()
         } else {
@@ -943,6 +990,70 @@ fn compact_provider_response(output_text: &str) -> CompactedProviderResponse {
         confidence_level,
         raw_length,
         compacted_length,
+    }
+}
+
+fn build_world_state_slice(house_root: &PathBuf) -> WorldStateSlice {
+    let mut workspace_entries = std::fs::read_dir(house_root)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            let file_type = metadata.file_type();
+            let kind = if file_type.is_dir() {
+                "dir"
+            } else if file_type.is_file() {
+                "file"
+            } else if file_type.is_symlink() {
+                "link"
+            } else {
+                "other"
+            };
+            Some(WorldStateWorkspaceEntry {
+                path: entry.path().display().to_string(),
+                kind: kind.to_string(),
+                size_bytes: metadata.len(),
+            })
+        })
+        .collect::<Vec<_>>();
+    workspace_entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let workspace_entry_count = workspace_entries.len();
+    workspace_entries.truncate(8);
+
+    let running_processes = Command::new("ps")
+        .args(["-axo", "pid=,comm="])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|stdout| {
+            stdout
+                .lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    let mut parts = trimmed.split_whitespace();
+                    let pid = parts.next()?.parse::<u32>().ok()?;
+                    let command = parts.collect::<Vec<_>>().join(" ");
+                    if command.is_empty() {
+                        return None;
+                    }
+                    Some(WorldStateProcessEntry { pid, command })
+                })
+                .take(8)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    WorldStateSlice {
+        scope: "workspace+process".into(),
+        workspace_root: house_root.display().to_string(),
+        workspace_entry_count,
+        workspace_entries,
+        running_processes,
+        observed_at: chrono::Utc::now(),
     }
 }
 
@@ -1209,7 +1320,7 @@ async fn run_latest_dispatch_live_once(
             }),
         );
 
-        let packet = assemble_context_packet(&runtime, &running_dispatch.session_id);
+        let packet = assemble_context_packet(&runtime, &running_dispatch.session_id, &state.house_root);
         let provider_prompt = build_provider_prompt(
             &running_dispatch.provider_lane_id,
             &packet,
@@ -1435,6 +1546,23 @@ async fn control_plane_status(State(state): State<AppState>) -> Json<ControlPlan
     Json(build_control_plane_status(&runtime.inventory()))
 }
 
+async fn world_state_status(State(state): State<AppState>) -> Json<WorldStateStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let active_mandala = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.as_ref())
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok());
+    let memory_policy = runtime.active_memory_policy().unwrap_or_default();
+    Json(WorldStateStatusResponse {
+        active_mandala_id: active_mandala.map(|mandala| mandala.self_section.id.clone()),
+        preferred_scope: "workspace+process".into(),
+        lookup_sources: memory_policy.lookup_sources,
+        slice: build_world_state_slice(&state.house_root),
+    })
+}
+
 async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatusResponse> {
     let status = state
         .distiller_status
@@ -1543,6 +1671,11 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
     } else {
         40
     };
+    let world_state_percent = if inventory.sessions > 0 && inventory.provider_lanes > 0 {
+        52
+    } else {
+        24
+    };
     let providers_percent = if inventory.provider_lanes > 0 { 68 } else { 24 };
     let capsules_percent = if inventory.capsules > 0 && inventory.slots > 0 {
         88
@@ -1595,6 +1728,13 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
                 phase: "surface",
                 summary: "inventory, memory, pulse",
                 steps_remaining: 4,
+            },
+            MacroAxisStatus {
+                label: "WORLD STATE",
+                percent: world_state_percent,
+                phase: "substrate",
+                summary: "bounded workspace and process slices are starting to come online",
+                steps_remaining: 6,
             },
             MacroAxisStatus {
                 label: "PROVIDERS",
@@ -1742,6 +1882,16 @@ fn build_control_plane_status(inventory: &HouseInventory) -> ControlPlaneRespons
                 },
                 priority: "high",
                 summary: "capsules, summaries, bridges, triggers, promotions, and compaction metrics are live",
+            },
+            ControlPlaneSection {
+                label: "World State Console",
+                status: if inventory.sessions > 0 {
+                    "baseline"
+                } else {
+                    "planned"
+                },
+                priority: "high",
+                summary: "bounded workspace and process snapshots are visible; incremental ingest and host graphing are future work",
             },
             ControlPlaneSection {
                 label: "Security Surface",
@@ -2853,6 +3003,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>World State Console</h2>
+            <div class="small">Bounded host-state slices for on-demand computer context.</div>
+            <div class="list" id="world-state-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Autonomy Surface</h2>
             <div class="small">House self-propulsion after the mission is defined.</div>
             <div class="action-row">
@@ -2944,6 +3100,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const controlPlaneViewEl = document.getElementById('control-plane-view');
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const securityStatusViewEl = document.getElementById('security-status-view');
+      const worldStateViewEl = document.getElementById('world-state-view');
       const autonomyStatusViewEl = document.getElementById('autonomy-status-view');
       const autonomyStatusLineEl = document.getElementById('autonomy-status-line');
       const toggleAutonomyEl = document.getElementById('toggle-autonomy');
@@ -2975,6 +3132,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         controlPlane: null,
         distillerStatus: null,
         securityStatus: null,
+        worldState: null,
         autonomyStatus: null,
         memorySearch: null
       };
@@ -3107,6 +3265,34 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">sacred shards: ${escapeHtml(security.sacred_shards)}</div>
             <div class="meta">sealed artifacts: ${escapeHtml(security.artifacts_total)}</div>
             <div class="meta">artifact levels: ${escapeHtml((security.artifact_seal_levels || []).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderWorldState() {
+        if (!state.worldState) {
+          worldStateViewEl.innerHTML = '<div class="empty">World state not loaded yet.</div>';
+          return;
+        }
+        const world = state.worldState;
+        const slice = world.slice || {};
+        worldStateViewEl.innerHTML = `
+          <div class="card">
+            <strong>World State Slice</strong>
+            <div class="meta">active mandala: ${escapeHtml(world.active_mandala_id || 'none')}</div>
+            <div class="meta">preferred scope: ${escapeHtml(world.preferred_scope || 'none')}</div>
+            <div class="meta">lookup sources: ${escapeHtml((world.lookup_sources || []).join(' | ') || 'none')}</div>
+            <div class="meta">workspace root: ${escapeHtml(slice.workspace_root || 'none')}</div>
+            <div class="meta">workspace entries: ${escapeHtml(slice.workspace_entry_count ?? 0)}</div>
+            <div class="meta">processes shown: ${escapeHtml((slice.running_processes || []).length)}</div>
+          </div>
+          <div class="card">
+            <strong>Workspace Snapshot</strong>
+            ${((slice.workspace_entries || []).map(entry => `<div class="meta">- [${escapeHtml(entry.kind)}:${escapeHtml(entry.size_bytes)}] ${escapeHtml(entry.path)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Process Snapshot</strong>
+            ${((slice.running_processes || []).map(process => `<div class="meta">- pid=${escapeHtml(process.pid)} ${escapeHtml(process.command)}</div>`).join('')) || '<div class="meta">- none</div>'}
           </div>
         `;
       }
@@ -3420,6 +3606,9 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">bridges: ${escapeHtml((packet.memory_bridges || []).length)}</div>
             <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
             <div class="meta">promotions: ${escapeHtml((packet.memory_promotions || []).length)}</div>
+            <div class="meta">world scope: ${escapeHtml(packet.world_state_slice?.scope || 'none')}</div>
+            <div class="meta">world entries: ${escapeHtml(packet.world_state_slice?.workspace_entry_count ?? 0)}</div>
+            <div class="meta">world processes: ${escapeHtml((packet.world_state_slice?.running_processes || []).length)}</div>
             <div class="meta">boot include: ${escapeHtml((packet.memory_policy?.boot_include || []).join(' | ') || 'none')}</div>
             <div class="meta">lookup sources: ${escapeHtml((packet.memory_policy?.lookup_sources || []).join(' | ') || 'none')}</div>
             <div class="meta">hot limit: ${escapeHtml(packet.memory_policy?.hot_context_limit ?? 0)}</div>
@@ -3483,6 +3672,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSecurityStatus();
       }
 
+      async function refreshWorldState() {
+        const res = await fetch('/status/world-state');
+        state.worldState = await res.json();
+        renderWorldState();
+      }
+
       async function refreshAutonomyStatus() {
         const res = await fetch('/status/autonomy');
         state.autonomyStatus = await res.json();
@@ -3544,6 +3739,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMacroStatus(),
           refreshControlPlane(),
           refreshSecurityStatus(),
+          refreshWorldState(),
           refreshAutonomyStatus(),
           refreshContextPacket(),
           refreshEvents()
@@ -3648,7 +3844,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -3677,6 +3873,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshWorldState(),
           refreshAutonomyStatus(),
           refreshTurns(),
           refreshDispatches(),
@@ -3702,6 +3899,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshWorldState(),
           refreshAutonomyStatus(),
           refreshTurns(),
           refreshDispatches(),
@@ -3727,6 +3925,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshWorldState(),
           refreshAutonomyStatus(),
           refreshTurns(),
           refreshDispatches(),
@@ -3753,6 +3952,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshControlPlane(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshWorldState(),
           refreshAutonomyStatus(),
           refreshMandalas(),
           refreshCapsules(),
@@ -3770,7 +3970,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -3782,7 +3982,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       async function bootstrapAnthropicLane() {
@@ -3794,7 +3994,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerSecondaryStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -3815,6 +4015,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
@@ -3823,6 +4024,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -3835,6 +4037,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
@@ -3848,6 +4051,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
@@ -3858,6 +4062,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshContextPacket().catch(console.error);
@@ -3867,6 +4072,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
             } else if (event.event_type === 'engine_selected') {
@@ -3875,6 +4081,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshProviders().catch(console.error);
               refreshDispatches().catch(console.error);
@@ -3884,6 +4091,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshContextPacket().catch(console.error);
@@ -4028,6 +4236,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshControlPlane(),
         refreshDistillerStatus(),
         refreshSecurityStatus(),
+        refreshWorldState(),
         refreshAutonomyStatus(),
         refreshSessions(),
         refreshTurns(),

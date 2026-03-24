@@ -25,6 +25,7 @@ pub use runtime::{
     ProviderLaneRecord, ProviderLaneRegistry, ResynthesisTriggerRecord, ResynthesisTriggerRegistry,
     SessionManager, SessionRecord, SlotRegistry, SummaryCheckpointRecord,
     SummaryCheckpointRegistry, TurnDispatchRecord, TurnDispatchRegistry, TurnRecord,
+    WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};
