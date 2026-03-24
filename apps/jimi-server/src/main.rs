@@ -200,6 +200,14 @@ struct CapsuleTrustStatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct MarketplaceStatusResponse {
+    total_entries: usize,
+    installable_entries: usize,
+    trusted_entries: usize,
+    entries: Vec<CapsulePackageRecord>,
+}
+
+#[derive(Debug, Serialize)]
 struct ProviderReadinessResponse {
     providers: Vec<ProviderCredentialStatus>,
 }
@@ -462,6 +470,7 @@ async fn main() {
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
         .route("/status/capsule-trust", get(capsule_trust_status))
+        .route("/status/marketplace", get(marketplace_status))
         .route("/status/approvals", get(approvals_status))
         .route("/status/provider-readiness", get(provider_readiness_status))
         .route("/status/world-state", get(world_state_status))
@@ -3054,6 +3063,34 @@ async fn capsule_trust_status(State(state): State<AppState>) -> Json<CapsuleTrus
     })
 }
 
+async fn marketplace_status(State(state): State<AppState>) -> Json<MarketplaceStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let entries = runtime
+        .capsule_packages
+        .all()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let installable_entries = entries
+        .iter()
+        .filter(|package| package.install_status != "installed")
+        .count();
+    let trusted_entries = entries
+        .iter()
+        .filter(|package| {
+            package.trust_level.eq_ignore_ascii_case("internal")
+                || package.trust_level.eq_ignore_ascii_case("trusted")
+        })
+        .count();
+
+    Json(MarketplaceStatusResponse {
+        total_entries: entries.len(),
+        installable_entries,
+        trusted_entries,
+        entries,
+    })
+}
+
 async fn provider_readiness_status() -> Json<ProviderReadinessResponse> {
     Json(ProviderReadinessResponse {
         providers: detect_provider_credentials(),
@@ -4552,6 +4589,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Marketplace Shell</h2>
+            <div class="small">Local capsule catalog for discovery, trust comparison, and install intent.</div>
+            <div class="list" id="marketplace-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Approval Surface</h2>
             <div class="small">Human interruptability and live execution guardrails for the house.</div>
             <div class="list" id="approvals-view"></div>
@@ -4658,6 +4701,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const securityStatusViewEl = document.getElementById('security-status-view');
       const capsuleTrustViewEl = document.getElementById('capsule-trust-view');
+      const marketplaceViewEl = document.getElementById('marketplace-view');
       const approvalsViewEl = document.getElementById('approvals-view');
       const worldStateViewEl = document.getElementById('world-state-view');
       const autonomyStatusViewEl = document.getElementById('autonomy-status-view');
@@ -4699,6 +4743,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         distillerStatus: null,
         securityStatus: null,
         capsuleTrustStatus: null,
+        marketplaceStatus: null,
         approvals: null,
         worldState: null,
         autonomyStatus: null,
@@ -4873,6 +4918,33 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">trust levels: ${escapeHtml(trustLevels.map(level => `${level.trust_level}:${level.packages}`).join(' | ') || 'none')}</div>
             <div class="meta">packages: ${escapeHtml(packages.map(pkg => `${pkg.display_name || pkg.package_id}(${pkg.trust_level})`).join(' | ') || 'none')}</div>
           </div>
+        `;
+      }
+
+      function renderMarketplaceStatus() {
+        if (!state.marketplaceStatus) {
+          marketplaceViewEl.innerHTML = '<div class="empty">Marketplace shell not loaded yet.</div>';
+          return;
+        }
+        const marketplace = state.marketplaceStatus;
+        const entries = marketplace.entries || [];
+        marketplaceViewEl.innerHTML = `
+          <div class="card">
+            <strong>Marketplace Shell</strong>
+            <div class="meta">entries: ${escapeHtml(marketplace.total_entries ?? 0)}</div>
+            <div class="meta">installable: ${escapeHtml(marketplace.installable_entries ?? 0)}</div>
+            <div class="meta">trusted: ${escapeHtml(marketplace.trusted_entries ?? 0)}</div>
+          </div>
+          ${entries.length ? entries.map(entry => `
+            <div class="card">
+              <strong>${escapeHtml(entry.display_name || entry.package_id)}</strong>
+              <div class="meta">package: ${escapeHtml(entry.package_id)}</div>
+              <div class="meta">creator: ${escapeHtml(entry.creator)}</div>
+              <div class="meta">source: ${escapeHtml(entry.source_origin)}</div>
+              <div class="meta">trust: ${escapeHtml(entry.trust_level)}</div>
+              <div class="meta">install status: ${escapeHtml(entry.install_status)}</div>
+            </div>
+          `).join('') : '<div class="empty">No marketplace entries yet.</div>'}
         `;
       }
 
@@ -5411,6 +5483,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderCapsuleTrustStatus();
       }
 
+      async function refreshMarketplaceStatus() {
+        const res = await fetch('/status/marketplace');
+        state.marketplaceStatus = await res.json();
+        renderMarketplaceStatus();
+      }
+
       async function refreshApprovals() {
         const res = await fetch('/status/approvals');
         state.approvals = await res.json();
@@ -5451,6 +5529,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([
           refreshCapsulePackages(),
           refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
@@ -5471,6 +5550,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([
           refreshCapsulePackages(),
           refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
@@ -5655,6 +5735,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([
           refreshCapsulePackages(),
           refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
           refreshApprovals(),
           refreshInventory(),
           refreshMacroStatus(),
@@ -5762,6 +5843,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshDistillerStatus(),
           refreshSecurityStatus(),
           refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
           refreshApprovals(),
           refreshWorldState(),
           refreshAutonomyStatus(),
