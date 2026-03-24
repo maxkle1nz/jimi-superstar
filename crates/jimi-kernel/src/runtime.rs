@@ -632,6 +632,23 @@ impl ProviderLaneRegistry {
             .ok_or_else(|| KernelError::LaneNotFound(provider_lane_id.into()))
     }
 
+    pub fn update_lane(
+        &mut self,
+        provider_lane_id: &str,
+        routing_mode: impl Into<String>,
+        fallback_group: Option<String>,
+        priority: u32,
+    ) -> Result<ProviderLaneRecord, KernelError> {
+        let lane = self
+            .lanes
+            .get_mut(provider_lane_id)
+            .ok_or_else(|| KernelError::LaneNotFound(provider_lane_id.into()))?;
+        lane.routing_mode = routing_mode.into();
+        lane.fallback_group = fallback_group;
+        lane.priority = priority;
+        Ok(lane.clone())
+    }
+
     pub fn insert_existing(&mut self, lane: ProviderLaneRecord) {
         self.lanes.insert(lane.provider_lane_id.clone(), lane);
     }

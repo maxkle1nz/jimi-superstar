@@ -25,7 +25,7 @@ use jimi_kernel::{
     HouseInventory, HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy,
     MandalaCapsuleContract, MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy,
     MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
-    MemoryCapsuleRecord, MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel,
+    MemoryCapsuleRecord, MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel,
     SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
     TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord, WorldStateRelationRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
@@ -292,6 +292,18 @@ struct ProviderBootstrapResponse {
     status: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateProviderLaneRequest {
+    routing_mode: String,
+    fallback_group: Option<String>,
+    priority: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderLaneUpdateResponse {
+    provider: ProviderLaneRecord,
+}
+
 #[derive(Debug, Serialize)]
 struct TurnBootstrapResponse {
     turn: TurnRecord,
@@ -395,6 +407,7 @@ async fn main() {
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
         .route("/providers", get(list_providers))
+        .route("/providers/:provider_lane_id", post(update_provider_lane))
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
@@ -2149,6 +2162,65 @@ async fn list_providers(
 ) -> Json<Vec<jimi_kernel::ProviderLaneRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.providers.all().into_iter().cloned().collect())
+}
+
+async fn update_provider_lane(
+    Path(provider_lane_id): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateProviderLaneRequest>,
+) -> Result<Json<ProviderLaneUpdateResponse>, (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let fallback_group = request
+        .fallback_group
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    let updated = runtime
+        .providers
+        .update_lane(
+            &provider_lane_id,
+            request.routing_mode.trim(),
+            fallback_group,
+            request.priority,
+        )
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.providers".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: updated.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "provider_lane_id": updated.provider_lane_id,
+            "routing_mode": updated.routing_mode,
+            "fallback_group": updated.fallback_group,
+            "priority": updated.priority,
+            "status": updated.status,
+            "change_kind": "lane_policy_updated",
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok(Json(ProviderLaneUpdateResponse { provider: updated }))
 }
 
 async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
@@ -4627,6 +4699,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">status: ${escapeHtml(provider.status)}</div>
             <div class="meta">ready: ${escapeHtml(readinessMap.get(provider.provider)?.ready ? 'yes' : 'no')}</div>
             <div class="meta">auth source: ${escapeHtml(readinessMap.get(provider.provider)?.source || 'unknown')}</div>
+            <div class="actions"><button onclick="editProviderLane('${escapeHtml(provider.provider_lane_id)}', '${escapeHtml(provider.routing_mode)}', '${escapeHtml(provider.fallback_group || '')}', '${escapeHtml(provider.priority)}')">Edit lane</button></div>
           </div>
         `).join('');
       }
@@ -4961,6 +5034,39 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshWorldState(),
           refreshAutonomyStatus(),
           refreshContextPacket(),
+          refreshEvents()
+        ]);
+      }
+
+      async function editProviderLane(providerLaneId, currentRoutingMode, currentFallbackGroup, currentPriority) {
+        const routingMode = window.prompt('Routing mode for this lane', currentRoutingMode || 'secondary');
+        if (routingMode === null) return;
+        const fallbackGroup = window.prompt('Fallback group for this lane (empty = none)', currentFallbackGroup || '');
+        if (fallbackGroup === null) return;
+        const priorityRaw = window.prompt('Priority for this lane (higher = preferred)', String(currentPriority || 0));
+        if (priorityRaw === null) return;
+        const priority = Number(priorityRaw);
+        if (!Number.isFinite(priority) || priority < 0) {
+          throw new Error('invalid lane priority');
+        }
+        const res = await fetch(`/providers/${encodeURIComponent(providerLaneId)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            routing_mode: routingMode.trim() || 'secondary',
+            fallback_group: fallbackGroup.trim(),
+            priority: Math.floor(priority)
+          })
+        });
+        if (!res.ok) {
+          throw new Error('failed to update provider lane');
+        }
+        await Promise.all([
+          refreshProviders(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshAutonomyStatus(),
           refreshEvents()
         ]);
       }
