@@ -16,9 +16,10 @@ use axum::{
 };
 use jimi_kernel::{
     ActorRef, DurableStore, EventEnvelope, EventType, HouseInventory, HouseRuntime,
+    FieldVaultArtifact,
     MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
-    MandalaSelf, MandalaStableMemory, SessionRecord, SlotBindingState, SubjectRef,
+    MandalaSelf, MandalaStableMemory, SealLevel, SessionRecord, SlotBindingState, SubjectRef,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -56,6 +57,14 @@ struct CapsuleBootstrapResponse {
     slot_state: SlotBindingState,
 }
 
+#[derive(Debug, Serialize)]
+struct ArtifactBootstrapResponse {
+    artifact_id: String,
+    capsule_id: Option<String>,
+    slot_id: Option<String>,
+    seal_level: SealLevel,
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("JIMI_DB_PATH")
@@ -81,7 +90,9 @@ async fn main() {
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
+        .route("/artifacts", get(list_artifacts))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
+        .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/events", get(list_events))
         .route("/ws/events", get(ws_events))
         .route("/inventory", get(inventory))
@@ -158,6 +169,11 @@ async fn list_capsules(State(state): State<AppState>) -> Json<Vec<jimi_kernel::C
 async fn list_slots(State(state): State<AppState>) -> Json<Vec<jimi_kernel::PersonalitySlot>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.slots.all().into_iter().cloned().collect())
+}
+
+async fn list_artifacts(State(state): State<AppState>) -> Json<Vec<FieldVaultArtifact>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.fieldvault.all().into_iter().cloned().collect())
 }
 
 async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
@@ -292,6 +308,71 @@ async fn bootstrap_core_capsule(
             capsule_id,
             slot_id,
             slot_state: slot.state,
+        }),
+    ))
+}
+
+async fn bootstrap_core_artifact(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ArtifactBootstrapResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+    let capsule_id = "capsule.jimi.superstar.core.v1".to_string();
+    let slot_id = "slot.jimi.superstar.primary".to_string();
+
+    if runtime.capsules.get(&capsule_id).is_err() || runtime.slots.get(&slot_id).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "core capsule and primary slot must exist before sealing an artifact".into(),
+        ));
+    }
+
+    let artifact = runtime.fieldvault.register_artifact(
+        Some(capsule_id.clone()),
+        Some(slot_id.clone()),
+        SealLevel::CapsulePrivate,
+        "./vault/jimi-superstar-core.fld",
+        true,
+        false,
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "artifact".into(),
+            subject_id: artifact.artifact_id.clone(),
+        },
+        EventType::ArtifactCreated,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "artifact_id": artifact.artifact_id.clone(),
+            "capsule_id": capsule_id.clone(),
+            "slot_id": slot_id.clone(),
+            "fld_path": artifact.fld_path.clone(),
+            "seal_level": "capsule_private",
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ArtifactBootstrapResponse {
+            artifact_id: artifact.artifact_id,
+            capsule_id: artifact.capsule_id,
+            slot_id: artifact.slot_id,
+            seal_level: artifact.seal_level,
         }),
     ))
 }
@@ -647,8 +728,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <button id="bootstrap-core">Install Core Capsule</button>
               <div class="small" id="bootstrap-status">awaiting bootstrap</div>
             </div>
+            <div class="action-row">
+              <button id="seal-core">Seal Core Artifact</button>
+              <div class="small" id="seal-status">awaiting fieldvault</div>
+            </div>
+            <div class="list" id="mandala-list"></div>
             <div class="list" id="capsule-list"></div>
             <div class="list" id="slot-list"></div>
+            <div class="list" id="artifact-list"></div>
           </div>
         </div>
 
@@ -666,16 +753,22 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const wsStatusEl = document.getElementById('ws-status');
       const sessionFormEl = document.getElementById('session-form');
       const sessionTitleEl = document.getElementById('session-title');
+      const mandalaListEl = document.getElementById('mandala-list');
       const capsuleListEl = document.getElementById('capsule-list');
       const slotListEl = document.getElementById('slot-list');
+      const artifactListEl = document.getElementById('artifact-list');
       const bootstrapButtonEl = document.getElementById('bootstrap-core');
       const bootstrapStatusEl = document.getElementById('bootstrap-status');
+      const sealButtonEl = document.getElementById('seal-core');
+      const sealStatusEl = document.getElementById('seal-status');
 
       const state = {
         sessions: [],
         events: [],
+        mandalas: [],
         capsules: [],
-        slots: []
+        slots: [],
+        artifacts: []
       };
 
       function renderInventory(data) {
@@ -727,6 +820,22 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         `).join('');
       }
 
+      function renderMandalas() {
+        if (!state.mandalas.length) {
+          mandalaListEl.innerHTML = '<div class="empty">No mandalas installed yet.</div>';
+          return;
+        }
+        mandalaListEl.innerHTML = state.mandalas.map(mandala => `
+          <div class="card">
+            <strong>${escapeHtml(mandala.self_section?.id || 'unknown')}</strong>
+            <div class="meta">role: ${escapeHtml(mandala.self_section?.role || 'unknown')}</div>
+            <div class="meta">soul: ${escapeHtml(mandala.self_section?.template_soul || 'unknown')}</div>
+            <div class="meta">provider: ${escapeHtml(mandala.execution_policy?.preferred_provider || 'unknown')}</div>
+            <div class="meta">goal: ${escapeHtml(mandala.active_snapshot?.current_goal || 'none')}</div>
+          </div>
+        `).join('');
+      }
+
       function renderCapsules() {
         if (!state.capsules.length) {
           capsuleListEl.innerHTML = '<div class="empty">No capsules installed yet.</div>';
@@ -758,6 +867,22 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         `).join('');
       }
 
+      function renderArtifacts() {
+        if (!state.artifacts.length) {
+          artifactListEl.innerHTML = '<div class="empty">No fieldvault artifacts sealed yet.</div>';
+          return;
+        }
+        artifactListEl.innerHTML = state.artifacts.map(artifact => `
+          <div class="card">
+            <strong>${escapeHtml(artifact.artifact_id)}</strong>
+            <div class="meta">seal: ${escapeHtml(artifact.seal_level)}</div>
+            <div class="meta">capsule: ${escapeHtml(artifact.capsule_id || 'none')}</div>
+            <div class="meta">slot: ${escapeHtml(artifact.slot_id || 'none')}</div>
+            <div class="meta">path: ${escapeHtml(artifact.fld_path)}</div>
+          </div>
+        `).join('');
+      }
+
       async function refreshInventory() {
         const res = await fetch('/inventory');
         const data = await res.json();
@@ -770,6 +895,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSessions();
       }
 
+      async function refreshMandalas() {
+        const res = await fetch('/mandalas');
+        state.mandalas = await res.json();
+        renderMandalas();
+      }
+
       async function refreshCapsules() {
         const res = await fetch('/capsules');
         state.capsules = await res.json();
@@ -780,6 +911,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const res = await fetch('/slots');
         state.slots = await res.json();
         renderSlots();
+      }
+
+      async function refreshArtifacts() {
+        const res = await fetch('/artifacts');
+        state.artifacts = await res.json();
+        renderArtifacts();
       }
 
       async function refreshEvents() {
@@ -812,7 +949,25 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         bootstrapStatusEl.textContent = `${result.slot_id} -> ${result.slot_state}`;
-        await Promise.all([refreshInventory(), refreshCapsules(), refreshSlots(), refreshEvents()]);
+        await Promise.all([
+          refreshInventory(),
+          refreshMandalas(),
+          refreshCapsules(),
+          refreshSlots(),
+          refreshEvents()
+        ]);
+      }
+
+      async function sealCoreArtifact() {
+        sealStatusEl.textContent = 'sealing fieldvault artifact…';
+        const res = await fetch('/bootstrap/core-artifact', { method: 'POST' });
+        if (!res.ok) {
+          sealStatusEl.textContent = 'seal failed';
+          throw new Error('failed to seal core artifact');
+        }
+        const result = await res.json();
+        sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
+        await Promise.all([refreshInventory(), refreshArtifacts(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -831,8 +986,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
+              refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
+            } else if (event.event_type === 'artifact_created') {
+              refreshInventory().catch(console.error);
+              refreshArtifacts().catch(console.error);
             }
           } catch (error) {
             console.error(error);
@@ -871,6 +1030,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
       });
 
+      sealButtonEl.addEventListener('click', async () => {
+        try {
+          await sealCoreArtifact();
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replaceAll('&', '&amp;')
@@ -883,8 +1050,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       Promise.all([
         refreshInventory(),
         refreshSessions(),
+        refreshMandalas(),
         refreshCapsules(),
         refreshSlots(),
+        refreshArtifacts(),
         refreshEvents()
       ])
         .then(connectEvents)
