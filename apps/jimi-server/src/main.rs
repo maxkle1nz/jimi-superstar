@@ -97,6 +97,14 @@ struct DispatchExecutionResponse {
     output_text: String,
 }
 
+#[derive(Debug)]
+struct CompactedProviderResponse {
+    memory_text: String,
+    confidence_level: f32,
+    raw_length: usize,
+    compacted_length: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct ContextPacketResponse {
     session_id: String,
@@ -658,6 +666,60 @@ fn build_provider_prompt(
     )
 }
 
+fn compact_provider_response(output_text: &str) -> CompactedProviderResponse {
+    let normalized_lines = output_text
+        .split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let joined = normalized_lines.join(" ");
+    let raw_length = joined.chars().count();
+
+    let mut chunks = joined
+        .split_terminator(['.', '!', '?'])
+        .map(str::trim)
+        .filter(|chunk| !chunk.is_empty())
+        .take(2)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    if chunks.is_empty() && !joined.is_empty() {
+        chunks.push(joined.clone());
+    }
+
+    let mut memory_text = chunks.join(". ");
+    if !memory_text.is_empty() && !memory_text.ends_with('.') {
+        memory_text.push('.');
+    }
+
+    let limit = 280;
+    if memory_text.chars().count() > limit {
+        memory_text = memory_text
+            .chars()
+            .take(limit.saturating_sub(1))
+            .collect::<String>();
+        if !memory_text.ends_with('…') {
+            memory_text.push('…');
+        }
+    }
+
+    let compacted_length = memory_text.chars().count();
+    let confidence_level = if raw_length > 700 {
+        0.84
+    } else if raw_length > 280 {
+        0.88
+    } else {
+        0.92
+    };
+
+    CompactedProviderResponse {
+        memory_text,
+        confidence_level,
+        raw_length,
+        compacted_length,
+    }
+}
+
 async fn query_memory(
     axum::extract::Path(session_id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -721,6 +783,7 @@ async fn execute_latest_dispatch(
         "JIMI routed '{}' through {} and completed the first simulated execution loop.",
         running_dispatch.intent_summary, running_dispatch.provider_lane_id
     );
+    let compacted_response = compact_provider_response(&output_text);
 
     let completed_dispatch = runtime
         .dispatches
@@ -736,10 +799,10 @@ async fn execute_latest_dispatch(
         completed_turn.lane_id.clone(),
         Some(completed_turn.turn_id.clone()),
         "assistant",
-        output_text.clone(),
+        compacted_response.memory_text.clone(),
         Some(running_dispatch.intent_summary.clone()),
         0.91,
-        0.88,
+        compacted_response.confidence_level,
         "session_open",
         "hot",
     );
@@ -762,6 +825,9 @@ async fn execute_latest_dispatch(
             "dispatch_id": completed_dispatch.dispatch_id.clone(),
             "provider_lane_id": completed_dispatch.provider_lane_id.clone(),
             "output_text": output_text.clone(),
+            "memory_text": compacted_response.memory_text.clone(),
+            "raw_output_length": compacted_response.raw_length,
+            "compacted_output_length": compacted_response.compacted_length,
             "status": "completed",
         }),
     );
@@ -864,6 +930,7 @@ async fn execute_latest_dispatch_live(
             .await
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
             .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    let compacted_response = compact_provider_response(&output_text);
 
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
     let completed_dispatch = runtime
@@ -880,10 +947,10 @@ async fn execute_latest_dispatch_live(
         completed_turn.lane_id.clone(),
         Some(completed_turn.turn_id.clone()),
         "assistant",
-        output_text.clone(),
+        compacted_response.memory_text.clone(),
         Some(dispatch.intent_summary.clone()),
         0.94,
-        0.9,
+        compacted_response.confidence_level,
         "session_open",
         "hot",
     );
@@ -906,6 +973,9 @@ async fn execute_latest_dispatch_live(
             "dispatch_id": completed_dispatch.dispatch_id.clone(),
             "provider_lane_id": completed_dispatch.provider_lane_id.clone(),
             "output_text": output_text.clone(),
+            "memory_text": compacted_response.memory_text.clone(),
+            "raw_output_length": compacted_response.raw_length,
+            "compacted_output_length": compacted_response.compacted_length,
             "status": "completed",
             "mode": "live_codex",
         }),
