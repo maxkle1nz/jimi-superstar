@@ -269,6 +269,21 @@ struct CapsuleBootstrapResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CapsuleInstallPreviewResponse {
+    package: CapsulePackageRecord,
+    slot_recommendation: String,
+    required_capabilities: Vec<String>,
+    optional_capabilities: Vec<String>,
+    fieldvault_requirements: usize,
+    install_preview_summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateCapsuleTrustRequest {
+    trust_level: String,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryPolicyUpdateResponse {
     mandala_id: String,
     memory_policy: MandalaMemoryPolicy,
@@ -406,6 +421,14 @@ async fn main() {
         )
         .route("/capsules", get(list_capsules))
         .route("/capsule-packages", get(list_capsule_packages))
+        .route(
+            "/capsule-packages/:package_id/preview",
+            get(capsule_package_preview),
+        )
+        .route(
+            "/capsule-packages/:package_id/trust",
+            post(update_capsule_trust),
+        )
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
         .route("/providers", get(list_providers))
@@ -2268,6 +2291,86 @@ async fn list_capsule_packages(
 ) -> Json<Vec<CapsulePackageRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.capsule_packages.all().into_iter().cloned().collect())
+}
+
+async fn capsule_package_preview(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<CapsuleInstallPreviewResponse>, (StatusCode, String)> {
+    let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+    let mandala = runtime
+        .mandalas
+        .get(&package.mandala_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+    let slot_recommendation = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find(|slot| slot.active_mandala_id.is_none())
+        .map(|slot| slot.slot_id.clone())
+        .unwrap_or_else(|| "slot.jimi.superstar.primary".to_string());
+    let required_capabilities = mandala.capability_policy.required.clone();
+    let optional_capabilities = mandala.capability_policy.optional.clone();
+    let fieldvault_requirements = mandala.sacred_shards.len();
+    let install_preview_summary = format!(
+        "{} from {} requests {} required capabilities and {} sealed shard bindings",
+        package.display_name,
+        package.source_origin,
+        required_capabilities.len(),
+        fieldvault_requirements
+    );
+    Ok(Json(CapsuleInstallPreviewResponse {
+        package,
+        slot_recommendation,
+        required_capabilities,
+        optional_capabilities,
+        fieldvault_requirements,
+        install_preview_summary,
+    }))
+}
+
+async fn update_capsule_trust(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateCapsuleTrustRequest>,
+) -> Result<Json<CapsulePackageRecord>, (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let updated = runtime
+        .capsule_packages
+        .classify_trust(&package_id, request.trust_level.trim())
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.capsules".into(),
+        },
+        SubjectRef {
+            subject_type: "capsule_package".into(),
+            subject_id: updated.package_id.clone(),
+        },
+        EventType::CapsuleInstalled,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": updated.package_id,
+            "capsule_id": updated.capsule_id,
+            "trust_level": updated.trust_level,
+            "change_kind": "trust_classified",
+        }),
+    );
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+    Ok(Json(updated))
 }
 
 async fn list_slots(State(state): State<AppState>) -> Json<Vec<jimi_kernel::PersonalitySlot>> {
@@ -4217,6 +4320,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             </div>
             <div class="list" id="mandala-list"></div>
             <div class="list" id="capsule-list"></div>
+            <div class="list" id="capsule-preview-view"></div>
             <div class="list" id="slot-list"></div>
             <div class="list" id="artifact-list"></div>
             <div class="list" id="provider-list"></div>
@@ -4345,6 +4449,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const dispatchListEl = document.getElementById('dispatch-list');
       const mandalaListEl = document.getElementById('mandala-list');
       const capsuleListEl = document.getElementById('capsule-list');
+      const capsulePreviewViewEl = document.getElementById('capsule-preview-view');
       const slotListEl = document.getElementById('slot-list');
       const artifactListEl = document.getElementById('artifact-list');
       const providerListEl = document.getElementById('provider-list');
@@ -4408,6 +4513,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         mandalas: [],
         capsules: [],
         capsulePackages: [],
+        capsulePreview: null,
         slots: [],
         artifacts: [],
         providers: [],
@@ -4785,6 +4891,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       function renderCapsules() {
         if (!state.capsules.length) {
           capsuleListEl.innerHTML = '<div class="empty">No capsules installed yet.</div>';
+          capsulePreviewViewEl.innerHTML = '<div class="empty">No capsule install preview loaded yet.</div>';
         } else {
           const packageMap = new Map((state.capsulePackages || []).map(pkg => [pkg.capsule_id, pkg]));
           capsuleListEl.innerHTML = state.capsules.map(capsule => {
@@ -4798,9 +4905,34 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <div class="meta">package: ${escapeHtml(pkg?.package_id || 'none')}</div>
               <div class="meta">trust: ${escapeHtml(pkg?.trust_level || 'unknown')}</div>
               <div class="meta">creator: ${escapeHtml(pkg?.creator || 'unknown')}</div>
+              <div class="actions">
+                <button onclick="previewCapsulePackage('${escapeHtml(pkg?.package_id || '')}')">Preview</button>
+                <button onclick="classifyCapsuleTrust('${escapeHtml(pkg?.package_id || '')}', '${escapeHtml(pkg?.trust_level || 'internal')}')">Trust</button>
+              </div>
             </div>
           `}).join('');
         }
+        renderCapsulePreview();
+      }
+
+      function renderCapsulePreview() {
+        if (!state.capsulePreview) {
+          capsulePreviewViewEl.innerHTML = '<div class="empty">No capsule install preview loaded yet.</div>';
+          return;
+        }
+        const preview = state.capsulePreview;
+        capsulePreviewViewEl.innerHTML = `
+          <div class="card">
+            <strong>Install Preview / ${escapeHtml(preview.package?.display_name || preview.package?.package_id || 'unknown')}</strong>
+            <div class="meta">package: ${escapeHtml(preview.package?.package_id || 'unknown')}</div>
+            <div class="meta">trust: ${escapeHtml(preview.package?.trust_level || 'unknown')}</div>
+            <div class="meta">slot recommendation: ${escapeHtml(preview.slot_recommendation || 'none')}</div>
+            <div class="meta">fieldvault requirements: ${escapeHtml(preview.fieldvault_requirements ?? 0)}</div>
+            <div class="meta">required caps: ${escapeHtml((preview.required_capabilities || []).join(' | ') || 'none')}</div>
+            <div class="meta">optional caps: ${escapeHtml((preview.optional_capabilities || []).join(' | ') || 'none')}</div>
+            <div class="meta">${escapeHtml(preview.install_preview_summary || 'no summary')}</div>
+          </div>
+        `;
       }
 
       function renderSlots() {
@@ -5262,6 +5394,42 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderCapsules();
       }
 
+      async function previewCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for preview');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/preview`);
+        if (!res.ok) {
+          throw new Error('failed to load capsule install preview');
+        }
+        state.capsulePreview = await res.json();
+        renderCapsulePreview();
+      }
+
+      async function classifyCapsuleTrust(packageId, currentTrustLevel) {
+        if (!packageId) {
+          throw new Error('no package id available for trust update');
+        }
+        const trustLevel = window.prompt('Trust level for this package', currentTrustLevel || 'internal');
+        if (trustLevel === null) return;
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/trust`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ trust_level: trustLevel.trim() || 'internal' })
+        });
+        if (!res.ok) {
+          throw new Error('failed to classify capsule trust');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
       async function refreshSlots() {
         const res = await fetch('/slots');
         state.slots = await res.json();
@@ -5451,6 +5619,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMandalas(),
           refreshCapsules(),
           refreshCapsulePackages(),
+          previewCapsulePackage(result.package_id),
           refreshSlots(),
           refreshEvents()
         ]);

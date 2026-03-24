@@ -532,6 +532,25 @@ impl CapsulePackageRegistry {
         self.packages.values().collect()
     }
 
+    pub fn get(&self, package_id: &str) -> Result<&CapsulePackageRecord, KernelError> {
+        self.packages
+            .get(package_id)
+            .ok_or_else(|| KernelError::CapsuleNotFound(package_id.into()))
+    }
+
+    pub fn classify_trust(
+        &mut self,
+        package_id: &str,
+        trust_level: impl Into<String>,
+    ) -> Result<CapsulePackageRecord, KernelError> {
+        let package = self
+            .packages
+            .get_mut(package_id)
+            .ok_or_else(|| KernelError::CapsuleNotFound(package_id.into()))?;
+        package.trust_level = trust_level.into();
+        Ok(package.clone())
+    }
+
     pub fn insert_existing(&mut self, package: CapsulePackageRecord) {
         self.packages.insert(package.package_id.clone(), package);
     }
