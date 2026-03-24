@@ -21,3 +21,4 @@ Steering overlays now include:
 
 - `RETROBUILDER` as the official build method
 - `Mandala + FieldVault` as the canonical persistence and capsule model
+- `RETROBUILDER Chat UIX` as the default human-friendly progress surface

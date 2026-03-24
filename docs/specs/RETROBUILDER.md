@@ -36,6 +36,8 @@ JIMI SUPERSTAR may eventually support multiple work methods, build modes, or orc
 
 RETROBUILDER is the current flagship method active in this system.
 
+Its default visible communication ritual is defined in `RETROBUILDER-CHAT-UIX.md`.
+
 ## Validation
 
 JIMI SUPERSTAR is the validation project for RETROBUILDER itself.
