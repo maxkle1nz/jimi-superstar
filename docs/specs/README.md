@@ -12,6 +12,7 @@ The constitutional spec stack for JIMI SUPERSTAR is currently:
 - Runtime module spec
 - Data model and storage
 - User flows and state model
+- Capsule memory architecture
 - Implementation sequence
 
 These specs currently live in the originating design workspace and will be imported here as the repository becomes the canonical home of the system.
