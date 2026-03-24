@@ -1047,6 +1047,103 @@ impl DurableStore {
 
         Ok(runtime)
     }
+
+    pub fn search_memory_capsules(
+        &self,
+        scope: &str,
+        query: &str,
+        session_id: Option<&str>,
+        room_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryCapsuleRecord>, DurableStoreError> {
+        let limit = limit.max(1).min(32) as i64;
+        let like_pattern = format!("%{}%", query.trim().to_lowercase());
+        let session_scope = session_id.unwrap_or_default().to_string();
+        let room_scope = room_id.unwrap_or_default().to_string();
+
+        let (sql, params_vec): (&str, Vec<&dyn rusqlite::ToSql>) = match scope {
+            "session" => (
+                "SELECT memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at
+                 FROM memory_capsules
+                 WHERE session_id = ?1
+                   AND (LOWER(content) LIKE ?2 OR LOWER(COALESCE(intent_summary, '')) LIKE ?2)
+                 ORDER BY relevance_score DESC, created_at DESC
+                 LIMIT ?3",
+                vec![&session_scope, &like_pattern, &limit],
+            ),
+            "room" => (
+                "SELECT memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at
+                 FROM memory_capsules
+                 WHERE room_id = ?1
+                   AND (LOWER(content) LIKE ?2 OR LOWER(COALESCE(intent_summary, '')) LIKE ?2)
+                 ORDER BY relevance_score DESC, created_at DESC
+                 LIMIT ?3",
+                vec![&room_scope, &like_pattern, &limit],
+            ),
+            _ => (
+                "SELECT memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at
+                 FROM memory_capsules
+                 WHERE LOWER(content) LIKE ?1 OR LOWER(COALESCE(intent_summary, '')) LIKE ?1
+                 ORDER BY relevance_score DESC, created_at DESC
+                 LIMIT ?2",
+                vec![&like_pattern, &limit],
+            ),
+        };
+
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, f32>(8)?,
+                row.get::<_, f32>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+            ))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (
+                memory_capsule_id,
+                session_id,
+                room_id,
+                lane_id,
+                turn_id,
+                role,
+                content,
+                intent_summary,
+                relevance_score,
+                confidence_level,
+                privacy_class,
+                band,
+                created_at,
+            ) = row?;
+            results.push(MemoryCapsuleRecord {
+                memory_capsule_id,
+                session_id: SessionId(session_id),
+                room_id,
+                lane_id: LaneId(lane_id),
+                turn_id: turn_id.map(TurnId),
+                role,
+                content,
+                intent_summary,
+                relevance_score,
+                confidence_level,
+                privacy_class,
+                band,
+                created_at: parse_dt(&created_at)?,
+            });
+        }
+        Ok(results)
+    }
 }
 
 fn parse_dt(value: &str) -> Result<DateTime<Utc>, DurableStoreError> {

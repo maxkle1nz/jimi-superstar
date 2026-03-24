@@ -119,6 +119,15 @@ struct DistillerStatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct MemorySearchResponse {
+    scope: String,
+    query: String,
+    session_id: Option<String>,
+    room_id: Option<String>,
+    results: Vec<MemoryCapsuleRecord>,
+}
+
+#[derive(Debug, Serialize)]
 struct ControlPlaneSection {
     label: &'static str,
     status: &'static str,
@@ -251,6 +260,7 @@ async fn main() {
         )
         .route("/memory/promotions", get(list_memory_promotions))
         .route("/memory/query/:session_id", get(query_memory))
+        .route("/memory/search", get(search_memory))
         .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
         .route(
@@ -872,6 +882,57 @@ async fn query_memory(
     let session_id = jimi_kernel::SessionId(session_id);
     let query = params.get("q").cloned().unwrap_or_default();
     Ok(Json(runtime.query_memory(&session_id, &query, 8)))
+}
+
+async fn search_memory(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> Result<Json<MemorySearchResponse>, (StatusCode, String)> {
+    let scope = params
+        .get("scope")
+        .cloned()
+        .unwrap_or_else(|| "house".into());
+    let query = params.get("q").cloned().unwrap_or_default();
+    let session_id = params.get("session_id").cloned();
+    let explicit_room_id = params.get("room_id").cloned();
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+
+    let derived_room_id = if explicit_room_id.is_none() {
+        if let Some(session_id) = session_id.as_ref() {
+            let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+            runtime
+                .sessions
+                .session(&jimi_kernel::SessionId(session_id.clone()))
+                .ok()
+                .map(|session| session.room_id.clone())
+        } else {
+            None
+        }
+    } else {
+        explicit_room_id.clone()
+    };
+
+    let store = state.store.lock().map_err(internal_lock_error)?;
+    let results = store
+        .search_memory_capsules(
+            &scope,
+            &query,
+            session_id.as_deref(),
+            derived_room_id.as_deref(),
+            limit,
+        )
+        .map_err(internal_store_error)?;
+
+    Ok(Json(MemorySearchResponse {
+        scope,
+        query,
+        session_id,
+        room_id: derived_room_id,
+        results,
+    }))
 }
 
 async fn execute_latest_dispatch(
@@ -1777,6 +1838,10 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
     )
 }
 
+fn internal_store_error(error: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+}
+
 fn run_codex_exec(house_root: &PathBuf, provider_prompt: &str) -> Result<String, String> {
     let output_path =
         std::env::temp_dir().join(format!("jimi-codex-output-{}.txt", uuid::Uuid::now_v7()));
@@ -2449,7 +2514,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="panel">
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
+            <form class="session-form" id="memory-search-form">
+              <select id="memory-search-scope">
+                <option value="session">session</option>
+                <option value="room">room</option>
+                <option value="house" selected>house</option>
+              </select>
+              <input id="memory-search-query" placeholder="search memory..." />
+              <button type="submit">Search Memory</button>
+            </form>
+            <div class="small" id="memory-search-status">awaiting memory search</div>
             <div class="list" id="memory-capsule-list"></div>
+            <div class="list" id="memory-search-results"></div>
             <div class="list" id="memory-relevance-list"></div>
             <div class="list" id="room-memory-relevance-list"></div>
             <div class="list" id="global-memory-relevance-list"></div>
@@ -2496,7 +2572,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const providerButtonEl = document.getElementById('bootstrap-provider');
       const providerStatusEl = document.getElementById('provider-status');
       const contextStatusEl = document.getElementById('context-status');
+      const memorySearchFormEl = document.getElementById('memory-search-form');
+      const memorySearchScopeEl = document.getElementById('memory-search-scope');
+      const memorySearchQueryEl = document.getElementById('memory-search-query');
+      const memorySearchStatusEl = document.getElementById('memory-search-status');
       const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
+      const memorySearchResultsEl = document.getElementById('memory-search-results');
       const memoryRelevanceListEl = document.getElementById('memory-relevance-list');
       const roomMemoryRelevanceListEl = document.getElementById('room-memory-relevance-list');
       const globalMemoryRelevanceListEl = document.getElementById('global-memory-relevance-list');
@@ -2535,7 +2616,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         providers: [],
         macroStatus: null,
         controlPlane: null,
-        distillerStatus: null
+        distillerStatus: null,
+        memorySearch: null
       };
 
       function renderInventory(data) {
@@ -2814,9 +2896,31 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         `).join('');
       }
 
+      function renderMemorySearch() {
+        if (!state.memorySearch) {
+          memorySearchResultsEl.innerHTML = '<div class="empty">No local search results yet.</div>';
+          return;
+        }
+        const search = state.memorySearch;
+        memorySearchStatusEl.textContent = `${search.scope} / ${search.query || 'empty query'} / ${search.results.length} results`;
+        memorySearchResultsEl.innerHTML = search.results.length
+          ? search.results.map(capsule => `
+            <div class="card">
+              <strong>search / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">scope: ${escapeHtml(search.scope)}</div>
+              <div class="meta">room: ${escapeHtml(capsule.room_id)}</div>
+              <div class="meta">session: ${escapeHtml(capsule.session_id)}</div>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No local search results yet.</div>';
+      }
+
       function renderContextPacket() {
         if (!state.contextPacket) {
           contextPacketViewEl.innerHTML = '<div class="empty">No context packet loaded yet.</div>';
+          memorySearchResultsEl.innerHTML = '<div class="empty">No local search results yet.</div>';
           memoryRelevanceListEl.innerHTML = '<div class="empty">No ranked memory candidates yet.</div>';
           roomMemoryRelevanceListEl.innerHTML = '<div class="empty">No room-scoped memory candidates yet.</div>';
           globalMemoryRelevanceListEl.innerHTML = '<div class="empty">No house-scoped memory candidates yet.</div>';
@@ -2962,6 +3066,19 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const res = await fetch('/status/distiller');
         state.distillerStatus = await res.json();
         renderDistillerStatus();
+      }
+
+      async function searchMemory() {
+        const query = memorySearchQueryEl.value.trim();
+        const scope = memorySearchScopeEl.value;
+        const sessionId = state.sessions[0]?.session_id;
+        const params = new URLSearchParams({ q: query, scope, limit: '8' });
+        if (sessionId) {
+          params.set('session_id', sessionId);
+        }
+        const res = await fetch(`/memory/search?${params.toString()}`);
+        state.memorySearch = await res.json();
+        renderMemorySearch();
       }
 
       async function updateMemoryPolicy() {
@@ -3389,6 +3506,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
       });
 
+      memorySearchFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          await searchMemory();
+        } catch (error) {
+          console.error(error);
+          memorySearchStatusEl.textContent = error.message;
+        }
+      });
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replaceAll('&', '&amp;')
@@ -3397,6 +3524,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           .replaceAll('"', '&quot;')
           .replaceAll("'", '&#39;');
       }
+
+      renderMemorySearch();
 
       Promise.all([
         refreshInventory(),
