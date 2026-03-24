@@ -5,6 +5,7 @@ use jimi_kernel::ProviderLaneRecord;
 #[derive(Debug, Clone)]
 pub enum ProviderAdapterKind {
     CodexCli,
+    AnthropicApi,
     Unsupported(String),
 }
 
@@ -15,6 +16,9 @@ pub trait ProviderAdapter {
 
 #[derive(Debug, Default)]
 struct CodexCliAdapter;
+
+#[derive(Debug, Default)]
+struct AnthropicApiAdapter;
 
 #[derive(Debug, Clone)]
 struct UnsupportedAdapter {
@@ -44,9 +48,20 @@ impl ProviderAdapter for UnsupportedAdapter {
     }
 }
 
+impl ProviderAdapter for AnthropicApiAdapter {
+    fn label(&self) -> &'static str {
+        "anthropic_api"
+    }
+
+    fn execute(&self, _house_root: &PathBuf, _provider_prompt: &str) -> Result<String, String> {
+        Err("provider adapter not implemented yet: anthropic".into())
+    }
+}
+
 pub fn resolve_provider_adapter(provider_lane: &ProviderLaneRecord) -> ProviderAdapterKind {
     match provider_lane.provider.as_str() {
         "codex" => ProviderAdapterKind::CodexCli,
+        "anthropic" => ProviderAdapterKind::AnthropicApi,
         other => ProviderAdapterKind::Unsupported(other.to_string()),
     }
 }
@@ -58,6 +73,9 @@ pub fn run_provider_adapter(
 ) -> Result<String, String> {
     match adapter {
         ProviderAdapterKind::CodexCli => CodexCliAdapter.execute(house_root, provider_prompt),
+        ProviderAdapterKind::AnthropicApi => {
+            AnthropicApiAdapter.execute(house_root, provider_prompt)
+        }
         ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
             provider: provider.clone(),
         }
@@ -68,6 +86,7 @@ pub fn run_provider_adapter(
 pub fn provider_adapter_label(adapter: &ProviderAdapterKind) -> &'static str {
     match adapter {
         ProviderAdapterKind::CodexCli => CodexCliAdapter.label(),
+        ProviderAdapterKind::AnthropicApi => AnthropicApiAdapter.label(),
         ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
             provider: provider.clone(),
         }

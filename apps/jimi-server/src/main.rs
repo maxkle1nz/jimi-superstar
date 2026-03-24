@@ -341,6 +341,10 @@ async fn main() {
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
+        .route(
+            "/bootstrap/provider-lane-anthropic",
+            post(bootstrap_provider_lane_anthropic),
+        )
         .route("/events", get(list_events))
         .route("/ws/events", get(ws_events))
         .route("/inventory", get(inventory))
@@ -406,11 +410,16 @@ async fn create_turn(
         .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
         .clone();
 
-    let provider_lane = runtime
-        .providers
-        .all()
-        .into_iter()
-        .next()
+    let provider_candidates = runtime.providers.all();
+    let provider_lane = provider_candidates
+        .iter()
+        .find(|provider| provider.routing_mode == "primary" && provider.status == "connected")
+        .or_else(|| {
+            provider_candidates
+                .iter()
+                .find(|provider| provider.status == "connected")
+        })
+        .cloned()
         .cloned()
         .ok_or_else(|| {
             (
@@ -2010,6 +2019,61 @@ async fn bootstrap_provider_lane(
     ))
 }
 
+async fn bootstrap_provider_lane_anthropic(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ProviderBootstrapResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+    let provider = runtime.providers.connect(
+        "provider.anthropic.secondary",
+        "anthropic",
+        "claude-sonnet-4.5",
+        "secondary",
+        "connected",
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: provider.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "provider_lane_id": provider.provider_lane_id.clone(),
+            "provider": provider.provider.clone(),
+            "model": provider.model.clone(),
+            "routing_mode": provider.routing_mode.clone(),
+            "status": provider.status.clone(),
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ProviderBootstrapResponse {
+            provider_lane_id: provider.provider_lane_id,
+            provider: provider.provider,
+            model: provider.model,
+            routing_mode: provider.routing_mode,
+            status: provider.status,
+        }),
+    ))
+}
+
 async fn ws_events(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -2741,6 +2805,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <button id="bootstrap-provider">Connect Provider Lane</button>
               <div class="small" id="provider-status">awaiting engine lane</div>
             </div>
+            <div class="action-row">
+              <button id="bootstrap-provider-anthropic">Connect Anthropic Lane</button>
+              <div class="small" id="provider-secondary-status">awaiting secondary lane</div>
+            </div>
             <div class="list" id="mandala-list"></div>
             <div class="list" id="capsule-list"></div>
             <div class="list" id="slot-list"></div>
@@ -2854,6 +2922,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const sealStatusEl = document.getElementById('seal-status');
       const providerButtonEl = document.getElementById('bootstrap-provider');
       const providerStatusEl = document.getElementById('provider-status');
+      const providerSecondaryButtonEl = document.getElementById('bootstrap-provider-anthropic');
+      const providerSecondaryStatusEl = document.getElementById('provider-secondary-status');
       const contextStatusEl = document.getElementById('context-status');
       const memorySearchFormEl = document.getElementById('memory-search-form');
       const memorySearchScopeEl = document.getElementById('memory-search-scope');
@@ -3715,6 +3785,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
+      async function bootstrapAnthropicLane() {
+        providerSecondaryStatusEl.textContent = 'connecting anthropic lane…';
+        const res = await fetch('/bootstrap/provider-lane-anthropic', { method: 'POST' });
+        if (!res.ok) {
+          providerSecondaryStatusEl.textContent = 'anthropic lane failed';
+          throw new Error('failed to bootstrap anthropic lane');
+        }
+        const result = await res.json();
+        providerSecondaryStatusEl.textContent = `${result.provider} -> ${result.model}`;
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+      }
+
       function connectEvents() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${location.host}/ws/events`);
@@ -3887,6 +3969,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           await bootstrapProviderLane();
         } catch (error) {
           console.error(error);
+          providerStatusEl.textContent = error.message;
+        }
+      });
+
+      providerSecondaryButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapAnthropicLane();
+        } catch (error) {
+          console.error(error);
+          providerSecondaryStatusEl.textContent = error.message;
         }
       });
 
