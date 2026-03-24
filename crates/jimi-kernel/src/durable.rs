@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
     LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord, PersonalitySlot,
-    ProviderLaneRecord, ResynthesisTriggerRecord, SessionId, SessionRecord,
+    ProviderLaneRecord, ResynthesisTriggerRecord, MemoryPromotionRecord, SessionId, SessionRecord,
     SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
 };
 
@@ -177,6 +177,16 @@ impl DurableStore {
               session_id TEXT NOT NULL,
               trigger_kind TEXT NOT NULL,
               summary TEXT NOT NULL,
+              confidence_level REAL NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_promotions (
+              memory_promotion_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              memory_capsule_id TEXT NOT NULL,
+              target_plane TEXT NOT NULL,
+              promoted_value TEXT NOT NULL,
               confidence_level REAL NOT NULL,
               created_at TEXT NOT NULL
             );
@@ -405,6 +415,22 @@ impl DurableStore {
                     trigger.summary,
                     trigger.confidence_level,
                     trigger.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for promotion in runtime.memory_promotions.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO memory_promotions (memory_promotion_id, session_id, memory_capsule_id, target_plane, promoted_value, confidence_level, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    promotion.memory_promotion_id,
+                    promotion.session_id.0,
+                    promotion.memory_capsule_id,
+                    promotion.target_plane,
+                    promotion.promoted_value,
+                    promotion.confidence_level,
+                    promotion.created_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -857,6 +883,35 @@ impl DurableStore {
                     session_id: SessionId(session_id),
                     trigger_kind,
                     summary,
+                    confidence_level,
+                    created_at: parse_dt(&created_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT memory_promotion_id, session_id, memory_capsule_id, target_plane, promoted_value, confidence_level, created_at FROM memory_promotions ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f32>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (memory_promotion_id, session_id, memory_capsule_id, target_plane, promoted_value, confidence_level, created_at) = row?;
+                runtime.memory_promotions.insert_existing(MemoryPromotionRecord {
+                    memory_promotion_id,
+                    session_id: SessionId(session_id),
+                    memory_capsule_id,
+                    target_plane,
+                    promoted_value,
                     confidence_level,
                     created_at: parse_dt(&created_at)?,
                 });

@@ -22,7 +22,7 @@ use jimi_kernel::{
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaStableMemory, MemoryCapsuleRecord, SealLevel, SessionRecord,
     SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
-    ResynthesisTriggerRecord,
+    ResynthesisTriggerRecord, MemoryPromotionRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -106,6 +106,7 @@ struct ContextPacketResponse {
     summary_checkpoints: Vec<SummaryCheckpointRecord>,
     memory_bridges: Vec<MemoryBridgeRecord>,
     resynthesis_triggers: Vec<ResynthesisTriggerRecord>,
+    memory_promotions: Vec<MemoryPromotionRecord>,
     active_snapshot: Option<MandalaActiveSnapshot>,
     providers: Vec<String>,
 }
@@ -141,6 +142,7 @@ async fn main() {
         .route("/memory/summaries", get(list_summary_checkpoints))
         .route("/memory/bridges", get(list_memory_bridges))
         .route("/memory/resynthesis-triggers", get(list_resynthesis_triggers))
+        .route("/memory/promotions", get(list_memory_promotions))
         .route("/memory/query/:session_id", get(query_memory))
         .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
@@ -355,6 +357,13 @@ async fn list_resynthesis_triggers(
     Json(runtime.resynthesis_triggers.all().into_iter().cloned().collect())
 }
 
+async fn list_memory_promotions(
+    State(state): State<AppState>,
+) -> Json<Vec<MemoryPromotionRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.memory_promotions.all().into_iter().cloned().collect())
+}
+
 async fn context_packet(
     axum::extract::Path(session_id): axum::extract::Path<String>,
     State(state): State<AppState>,
@@ -426,6 +435,18 @@ async fn context_packet(
         .rev()
         .collect();
 
+    let memory_promotions = runtime
+        .memory_promotions
+        .by_session(&session_id)
+        .into_iter()
+        .rev()
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
     let providers = runtime
         .providers
         .all()
@@ -440,6 +461,7 @@ async fn context_packet(
         summary_checkpoints,
         memory_bridges,
         resynthesis_triggers,
+        memory_promotions,
         active_snapshot,
         providers,
     }))
@@ -1400,6 +1422,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="list" id="summary-list"></div>
             <div class="list" id="bridge-list"></div>
             <div class="list" id="trigger-list"></div>
+            <div class="list" id="promotion-list"></div>
             <div class="list" id="context-packet-view"></div>
           </div>
         </div>
@@ -1444,6 +1467,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const summaryListEl = document.getElementById('summary-list');
       const bridgeListEl = document.getElementById('bridge-list');
       const triggerListEl = document.getElementById('trigger-list');
+      const promotionListEl = document.getElementById('promotion-list');
       const contextPacketViewEl = document.getElementById('context-packet-view');
 
       const state = {
@@ -1454,6 +1478,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         summaries: [],
         bridges: [],
         triggers: [],
+        promotions: [],
         contextPacket: null,
         events: [],
         mandalas: [],
@@ -1477,6 +1502,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['summaries', inventory.summary_checkpoints ?? 0],
           ['bridges', inventory.memory_bridges ?? 0],
           ['triggers', inventory.resynthesis_triggers ?? 0],
+          ['promotions', inventory.memory_promotions ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -1650,12 +1676,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           memoryRelevanceListEl.innerHTML = '<div class="empty">No ranked memory candidates yet.</div>';
           bridgeListEl.innerHTML = '<div class="empty">No memory bridges yet.</div>';
           triggerListEl.innerHTML = '<div class="empty">No re-synthesis triggers yet.</div>';
+          promotionListEl.innerHTML = '<div class="empty">No memory promotions yet.</div>';
           return;
         }
         const packet = state.contextPacket;
         const relevant = packet.relevant_capsules || [];
         const bridges = packet.memory_bridges || [];
         const triggers = packet.resynthesis_triggers || [];
+        const promotions = packet.memory_promotions || [];
         memoryRelevanceListEl.innerHTML = relevant.length
           ? relevant.map(capsule => `
             <div class="card">
@@ -1685,6 +1713,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             </div>
           `).join('')
           : '<div class="empty">No re-synthesis triggers yet.</div>';
+        promotionListEl.innerHTML = promotions.length
+          ? promotions.map(promotion => `
+            <div class="card">
+              <strong>promotion / ${escapeHtml(promotion.target_plane)}</strong>
+              <div class="meta">confidence: ${escapeHtml(promotion.confidence_level)}</div>
+              <div class="meta">capsule: ${escapeHtml(promotion.memory_capsule_id)}</div>
+              <div class="meta">${escapeHtml(promotion.promoted_value)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No memory promotions yet.</div>';
         contextPacketViewEl.innerHTML = `
           <div class="card">
             <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
@@ -1694,6 +1732,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
             <div class="meta">bridges: ${escapeHtml((packet.memory_bridges || []).length)}</div>
             <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
+            <div class="meta">promotions: ${escapeHtml((packet.memory_promotions || []).length)}</div>
             <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
             <div class="meta">blockers: ${escapeHtml((packet.active_snapshot?.blockers || []).join(' | ') || 'none')}</div>
             <div class="meta">next actions: ${escapeHtml((packet.active_snapshot?.next_actions || []).join(' | ') || 'none')}</div>
@@ -1782,6 +1821,11 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSummaries();
       }
 
+      async function refreshPromotions() {
+        const res = await fetch('/memory/promotions');
+        state.promotions = await res.json();
+      }
+
       async function refreshContextPacket() {
         const session = state.sessions[0];
         if (!session) {
@@ -1815,7 +1859,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshSummaries(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -1844,6 +1888,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshDispatches(),
           refreshMemoryCapsules(),
           refreshSummaries(),
+          refreshPromotions(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -1863,6 +1908,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshDispatches(),
           refreshMemoryCapsules(),
           refreshSummaries(),
+          refreshPromotions(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -1882,6 +1928,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshDispatches(),
           refreshMemoryCapsules(),
           refreshSummaries(),
+          refreshPromotions(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -1949,6 +1996,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
+              refreshPromotions().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
               refreshInventory().catch(console.error);
@@ -1956,6 +2004,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
+              refreshPromotions().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
@@ -2075,6 +2124,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshProviders(),
         refreshMemoryCapsules(),
         refreshSummaries(),
+        refreshPromotions(),
         refreshContextPacket(),
         refreshEvents()
       ])

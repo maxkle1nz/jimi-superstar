@@ -137,6 +137,17 @@ pub struct ResynthesisTriggerRecord {
     pub created_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPromotionRecord {
+    pub memory_promotion_id: String,
+    pub session_id: SessionId,
+    pub memory_capsule_id: String,
+    pub target_plane: String,
+    pub promoted_value: String,
+    pub confidence_level: f32,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,
@@ -831,6 +842,51 @@ impl ResynthesisTriggerRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct MemoryPromotionRegistry {
+    promotions: BTreeMap<String, MemoryPromotionRecord>,
+}
+
+impl MemoryPromotionRegistry {
+    pub fn create(
+        &mut self,
+        session_id: SessionId,
+        memory_capsule_id: impl Into<String>,
+        target_plane: impl Into<String>,
+        promoted_value: impl Into<String>,
+        confidence_level: f32,
+    ) -> MemoryPromotionRecord {
+        let promotion = MemoryPromotionRecord {
+            memory_promotion_id: format!("promote_{}", Uuid::now_v7()),
+            session_id,
+            memory_capsule_id: memory_capsule_id.into(),
+            target_plane: target_plane.into(),
+            promoted_value: promoted_value.into(),
+            confidence_level,
+            created_at: Utc::now(),
+        };
+        self.promotions
+            .insert(promotion.memory_promotion_id.clone(), promotion.clone());
+        promotion
+    }
+
+    pub fn all(&self) -> Vec<&MemoryPromotionRecord> {
+        self.promotions.values().collect()
+    }
+
+    pub fn by_session(&self, session_id: &SessionId) -> Vec<&MemoryPromotionRecord> {
+        self.promotions
+            .values()
+            .filter(|promotion| promotion.session_id.0 == session_id.0)
+            .collect()
+    }
+
+    pub fn insert_existing(&mut self, promotion: MemoryPromotionRecord) {
+        self.promotions
+            .insert(promotion.memory_promotion_id.clone(), promotion);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -847,6 +903,7 @@ pub struct HouseInventory {
     pub summary_checkpoints: usize,
     pub memory_bridges: usize,
     pub resynthesis_triggers: usize,
+    pub memory_promotions: usize,
 }
 
 #[derive(Debug, Default)]
@@ -863,6 +920,7 @@ pub struct HouseRuntime {
     pub summary_checkpoints: SummaryCheckpointRegistry,
     pub memory_bridges: MemoryBridgeRegistry,
     pub resynthesis_triggers: ResynthesisTriggerRegistry,
+    pub memory_promotions: MemoryPromotionRegistry,
 }
 
 impl HouseRuntime {
@@ -905,6 +963,7 @@ impl HouseRuntime {
             summary_checkpoints: self.summary_checkpoints.all().len(),
             memory_bridges: self.memory_bridges.all().len(),
             resynthesis_triggers: self.resynthesis_triggers.all().len(),
+            memory_promotions: self.memory_promotions.all().len(),
         }
     }
 
@@ -967,6 +1026,7 @@ impl HouseRuntime {
         let decisions_retained = checkpoint.decisions_retained.clone();
         let unresolved_items = checkpoint.unresolved_items.clone();
 
+        let latest_hot_capsule = hot_capsules.last().cloned();
         for slot in self.slots.all() {
             if let Some(mandala_id) = &slot.active_mandala_id {
                 if let Ok(mandala) = self.mandalas.get_mut(mandala_id) {
@@ -986,7 +1046,51 @@ impl HouseRuntime {
                         .iter()
                         .map(|capsule| capsule.content.clone())
                         .collect();
+
+                    if let Some(capsule) = &latest_hot_capsule {
+                        if capsule.role == "operator" && capsule.confidence_level >= 0.9 {
+                            mandala
+                                .stable_memory
+                                .learned_rules
+                                .push(capsule.content.clone());
+                            mandala.stable_memory.memory.insert(
+                                format!("session.{}.latest_rule", session_id.0),
+                                serde_json::json!(capsule.content),
+                            );
+                            let _ = self.memory_promotions.create(
+                                session_id.clone(),
+                                capsule.memory_capsule_id.clone(),
+                                "mandala_stable_memory",
+                                capsule.content.clone(),
+                                capsule.confidence_level,
+                            );
+                        }
+                    }
                 }
+            }
+        }
+
+        for capsule in hot_capsules
+            .iter()
+            .chain(warm_capsules.iter())
+            .chain(archive_capsules.iter())
+        {
+            if capsule.privacy_class == "operator_private" || capsule.privacy_class == "sealed_candidate" {
+                let _ = self.fieldvault.register_artifact(
+                    None,
+                    None,
+                    SealLevel::CapsulePrivate,
+                    format!("./vault/{}.fld", capsule.memory_capsule_id),
+                    true,
+                    false,
+                );
+                let _ = self.memory_promotions.create(
+                    session_id.clone(),
+                    capsule.memory_capsule_id.clone(),
+                    "fieldvault",
+                    capsule.content.clone(),
+                    capsule.confidence_level,
+                );
             }
         }
 
