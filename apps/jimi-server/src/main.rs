@@ -2216,6 +2216,11 @@ fn distill_session_transcript(
         .rev()
         .find(|capsule| capsule.role == "operator")
         .cloned();
+    let latest_assistant = recent_capsules
+        .iter()
+        .rev()
+        .find(|capsule| capsule.role == "assistant")
+        .cloned();
 
     let mut distilled_capsules = 1;
     let mut distilled_kinds = vec!["conversation/transcript".to_string()];
@@ -2261,7 +2266,7 @@ fn distill_session_transcript(
         );
     }
 
-    if let Some(operator_capsule) = latest_operator {
+    if let Some(operator_capsule) = latest_operator.clone() {
         distilled_capsules += 1;
         distilled_kinds.push("conversation/directive".into());
         runtime.memory_capsules.append(
@@ -2277,6 +2282,65 @@ fn distill_session_transcript(
             "session_open",
             "warm",
         );
+    }
+
+    if let Some(assistant_capsule) = latest_assistant.clone() {
+        let assistant_lower = assistant_capsule.content.to_lowercase();
+        let operator_text = latest_operator
+            .as_ref()
+            .map(|capsule| capsule.content.as_str())
+            .unwrap_or("current session");
+
+        if assistant_lower.contains("will ")
+            || assistant_lower.contains("i'll ")
+            || assistant_lower.contains("next ")
+            || assistant_lower.contains("going to")
+        {
+            distilled_capsules += 1;
+            distilled_kinds.push("conversation/promise".into());
+            runtime.memory_capsules.append(
+                session_id.clone(),
+                session.room_id.clone(),
+                latest_turn.lane_id.clone(),
+                Some(latest_turn.turn_id.clone()),
+                "distiller",
+                format!(
+                    "Promise made for {}: {}",
+                    operator_text, assistant_capsule.content
+                ),
+                Some("conversation/promise".into()),
+                0.8,
+                0.86,
+                "session_open",
+                "warm",
+            );
+        }
+
+        if assistant_lower.contains("decided")
+            || assistant_lower.contains("we should")
+            || assistant_lower.contains("the plan is")
+            || assistant_lower.contains("we will use")
+            || assistant_lower.contains("i recommend")
+        {
+            distilled_capsules += 1;
+            distilled_kinds.push("conversation/decision".into());
+            runtime.memory_capsules.append(
+                session_id.clone(),
+                session.room_id.clone(),
+                latest_turn.lane_id.clone(),
+                Some(latest_turn.turn_id.clone()),
+                "distiller",
+                format!(
+                    "Decision taken for {}: {}",
+                    operator_text, assistant_capsule.content
+                ),
+                Some("conversation/decision".into()),
+                0.82,
+                0.88,
+                "session_open",
+                "warm",
+            );
+        }
     }
 
     runtime.refresh_memory_for_session(session_id);
