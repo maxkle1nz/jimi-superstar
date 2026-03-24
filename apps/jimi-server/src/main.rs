@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     path::PathBuf,
     process::Command,
@@ -182,6 +182,21 @@ struct SecurityStatusResponse {
     skill_packs: usize,
     artifacts_total: usize,
     artifact_seal_levels: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CapsuleTrustLevelCount {
+    trust_level: String,
+    packages: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CapsuleTrustStatusResponse {
+    total_packages: usize,
+    internal_packages: usize,
+    external_packages: usize,
+    trust_levels: Vec<CapsuleTrustLevelCount>,
+    packages: Vec<CapsulePackageRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -436,6 +451,7 @@ async fn main() {
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
+        .route("/status/capsule-trust", get(capsule_trust_status))
         .route("/status/approvals", get(approvals_status))
         .route("/status/provider-readiness", get(provider_readiness_status))
         .route("/status/world-state", get(world_state_status))
@@ -2885,6 +2901,42 @@ async fn security_status(State(state): State<AppState>) -> Json<SecurityStatusRe
     })
 }
 
+async fn capsule_trust_status(State(state): State<AppState>) -> Json<CapsuleTrustStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let packages = runtime
+        .capsule_packages
+        .all()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut trust_counts = BTreeMap::<String, usize>::new();
+    let mut internal_packages = 0usize;
+    let mut external_packages = 0usize;
+
+    for package in &packages {
+        *trust_counts.entry(package.trust_level.clone()).or_default() += 1;
+        if package.trust_level.eq_ignore_ascii_case("internal") {
+            internal_packages += 1;
+        } else {
+            external_packages += 1;
+        }
+    }
+
+    Json(CapsuleTrustStatusResponse {
+        total_packages: packages.len(),
+        internal_packages,
+        external_packages,
+        trust_levels: trust_counts
+            .into_iter()
+            .map(|(trust_level, packages)| CapsuleTrustLevelCount {
+                trust_level,
+                packages,
+            })
+            .collect(),
+        packages,
+    })
+}
+
 async fn provider_readiness_status() -> Json<ProviderReadinessResponse> {
     Json(ProviderReadinessResponse {
         providers: detect_provider_credentials(),
@@ -4377,6 +4429,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Capsule Trust Surface</h2>
+            <div class="small">Trust posture and package provenance inside the sovereign capsule house.</div>
+            <div class="list" id="capsule-trust-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Approval Surface</h2>
             <div class="small">Human interruptability and live execution guardrails for the house.</div>
             <div class="list" id="approvals-view"></div>
@@ -4482,6 +4540,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const providerReadinessViewEl = document.getElementById('provider-readiness-view');
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const securityStatusViewEl = document.getElementById('security-status-view');
+      const capsuleTrustViewEl = document.getElementById('capsule-trust-view');
       const approvalsViewEl = document.getElementById('approvals-view');
       const worldStateViewEl = document.getElementById('world-state-view');
       const autonomyStatusViewEl = document.getElementById('autonomy-status-view');
@@ -4522,6 +4581,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         providerReadiness: null,
         distillerStatus: null,
         securityStatus: null,
+        capsuleTrustStatus: null,
         approvals: null,
         worldState: null,
         autonomyStatus: null,
@@ -4675,6 +4735,26 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">sacred shards: ${escapeHtml(security.sacred_shards)}</div>
             <div class="meta">sealed artifacts: ${escapeHtml(security.artifacts_total)}</div>
             <div class="meta">artifact levels: ${escapeHtml((security.artifact_seal_levels || []).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderCapsuleTrustStatus() {
+        if (!state.capsuleTrustStatus) {
+          capsuleTrustViewEl.innerHTML = '<div class="empty">Capsule trust surface not loaded yet.</div>';
+          return;
+        }
+        const trust = state.capsuleTrustStatus;
+        const trustLevels = trust.trust_levels || [];
+        const packages = trust.packages || [];
+        capsuleTrustViewEl.innerHTML = `
+          <div class="card">
+            <strong>Capsule Trust</strong>
+            <div class="meta">total packages: ${escapeHtml(trust.total_packages ?? 0)}</div>
+            <div class="meta">internal packages: ${escapeHtml(trust.internal_packages ?? 0)}</div>
+            <div class="meta">external packages: ${escapeHtml(trust.external_packages ?? 0)}</div>
+            <div class="meta">trust levels: ${escapeHtml(trustLevels.map(level => `${level.trust_level}:${level.packages}`).join(' | ') || 'none')}</div>
+            <div class="meta">packages: ${escapeHtml(packages.map(pkg => `${pkg.display_name || pkg.package_id}(${pkg.trust_level})`).join(' | ') || 'none')}</div>
           </div>
         `;
       }
@@ -5204,6 +5284,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSecurityStatus();
       }
 
+      async function refreshCapsuleTrustStatus() {
+        const res = await fetch('/status/capsule-trust');
+        state.capsuleTrustStatus = await res.json();
+        renderCapsuleTrustStatus();
+      }
+
       async function refreshApprovals() {
         const res = await fetch('/status/approvals');
         state.approvals = await res.json();
@@ -5422,6 +5508,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         await Promise.all([
           refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
@@ -5528,6 +5615,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshCapsuleTrustStatus(),
           refreshApprovals(),
           refreshWorldState(),
           refreshAutonomyStatus(),
