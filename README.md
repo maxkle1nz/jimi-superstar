@@ -90,4 +90,4 @@ The first implementation slice builds the minimal sovereign kernel:
 
 ## Status
 
-This repository is intentionally private and currently in constitutional foundation stage.
+This repository is public and currently in constitutional foundation plus early kernel stage.

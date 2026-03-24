@@ -371,3 +371,113 @@ impl HouseRuntime {
         session
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaExecutionPolicy, MandalaManifest,
+        MandalaMemoryPolicy, MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory,
+        SealLevel,
+    };
+
+    fn sample_mandala(id: &str) -> MandalaManifest {
+        MandalaManifest {
+            manifest_version: "mandala/v1".into(),
+            kind: "mandala".into(),
+            generated_at: 0.0,
+            agent_version: 1,
+            self_section: MandalaSelf {
+                id: id.into(),
+                role: "architect".into(),
+                template_soul: "atlas".into(),
+                execution_role: None,
+                specialization: Some("systems".into()),
+                tone: Some("precise".into()),
+                canonical: true,
+                boundaries: BTreeMap::new(),
+                tags: vec!["core".into()],
+            },
+            execution_policy: MandalaExecutionPolicy {
+                body: "contracts before code".into(),
+                execution_lane: "main".into(),
+                preferred_provider: "codex".into(),
+                preferred_model: "gpt-5".into(),
+                reasoning_effort: Some("high".into()),
+                use_session_pool: false,
+                allow_provider_override: false,
+                capabilities: vec!["tool.exec.bash".into()],
+            },
+            capability_policy: MandalaCapabilityPolicy::default(),
+            memory_policy: MandalaMemoryPolicy::default(),
+            stable_memory: MandalaStableMemory::default(),
+            active_snapshot: MandalaActiveSnapshot::default(),
+            refs: MandalaRefs::default(),
+            projection: MandalaProjection {
+                projection_kind: "role-overlay".into(),
+                requested_role: "architect".into(),
+                template_soul: "atlas".into(),
+                execution_role: None,
+                default_body: "contracts before code".into(),
+                lineage: vec!["architect".into()],
+                autoevolve: true,
+            },
+            ownership: None,
+            capsule_contract: None,
+            skill_packs: Vec::new(),
+            sacred_shards: Vec::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn bootstrap_session_emits_session_created_event() {
+        let mut runtime = HouseRuntime::default();
+        let session = runtime.bootstrap_session("JIMI bootstrap");
+
+        assert_eq!(runtime.events.all().len(), 1);
+        assert_eq!(runtime.events.all()[0].event_type, EventType::SessionCreated);
+        assert_eq!(
+            runtime.events.all()[0].session_id.as_deref(),
+            Some(session.session_id.0.as_str())
+        );
+    }
+
+    #[test]
+    fn can_install_capsule_and_bind_it_to_slot() {
+        let mut runtime = HouseRuntime::default();
+        let mandala = sample_mandala("jimi.core");
+        runtime.mandalas.install(mandala);
+        let capsule = runtime
+            .capsules
+            .install("capsule:jimi.core", "jimi.core", 1, "marketplace:test");
+        runtime.slots.define_slot("primary", "Primary");
+        runtime
+            .slots
+            .bind_capsule("primary", capsule.capsule_id.clone(), capsule.mandala_id.clone(), false)
+            .unwrap();
+        runtime.slots.activate("primary").unwrap();
+
+        let slot = runtime.slots.get("primary").unwrap();
+        assert_eq!(slot.state, SlotBindingState::Active);
+        assert_eq!(slot.capsule_id.as_deref(), Some("capsule:jimi.core"));
+        assert_eq!(slot.active_mandala_id.as_deref(), Some("jimi.core"));
+    }
+
+    #[test]
+    fn fieldvault_runtime_registers_sealed_artifact() {
+        let mut runtime = HouseRuntime::default();
+        let artifact = runtime.fieldvault.register_artifact(
+            Some("capsule:jimi.core".into()),
+            Some("primary".into()),
+            SealLevel::SacredShard,
+            "/tmp/jimi-core.fld",
+            true,
+            false,
+        );
+
+        assert_eq!(runtime.fieldvault.all().len(), 1);
+        assert_eq!(artifact.seal_level, SealLevel::SacredShard);
+        assert_eq!(artifact.fld_path, "/tmp/jimi-core.fld");
+    }
+}
