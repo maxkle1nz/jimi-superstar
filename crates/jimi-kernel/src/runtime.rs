@@ -72,6 +72,8 @@ pub struct ProviderLaneRecord {
     pub provider: String,
     pub model: String,
     pub routing_mode: String,
+    pub fallback_group: Option<String>,
+    pub priority: u32,
     pub status: String,
     pub connected_at: chrono::DateTime<Utc>,
 }
@@ -588,6 +590,8 @@ impl ProviderLaneRegistry {
         provider: impl Into<String>,
         model: impl Into<String>,
         routing_mode: impl Into<String>,
+        fallback_group: Option<String>,
+        priority: u32,
         status: impl Into<String>,
     ) -> ProviderLaneRecord {
         let lane = ProviderLaneRecord {
@@ -595,6 +599,8 @@ impl ProviderLaneRegistry {
             provider: provider.into(),
             model: model.into(),
             routing_mode: routing_mode.into(),
+            fallback_group,
+            priority,
             status: status.into(),
             connected_at: Utc::now(),
         };
@@ -1844,6 +1850,8 @@ mod tests {
             "codex",
             "gpt-5",
             "primary",
+            Some("core".into()),
+            100,
             "connected",
         );
         runtime.dispatches.dispatch(

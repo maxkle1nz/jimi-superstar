@@ -190,14 +190,32 @@ pub fn fallback_candidates(
         .cloned()
         .collect::<Vec<_>>();
 
+    let same_group_candidates = candidates
+        .iter()
+        .filter(|lane| {
+            lane.fallback_group.is_some() && lane.fallback_group == primary_lane.fallback_group
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !same_group_candidates.is_empty() {
+        candidates = same_group_candidates;
+    }
+
     candidates.sort_by(|left, right| {
+        let left_same_group = (left.fallback_group == primary_lane.fallback_group
+            && left.fallback_group.is_some()) as u8;
+        let right_same_group = (right.fallback_group == primary_lane.fallback_group
+            && right.fallback_group.is_some()) as u8;
         let left_same_provider = (left.provider == primary_lane.provider) as u8;
         let right_same_provider = (right.provider == primary_lane.provider) as u8;
         let left_primary = (left.routing_mode == "primary") as u8;
         let right_primary = (right.routing_mode == "primary") as u8;
 
-        right_same_provider
-            .cmp(&left_same_provider)
+        right_same_group
+            .cmp(&left_same_group)
+            .then_with(|| right_same_provider.cmp(&left_same_provider))
+            .then_with(|| right.priority.cmp(&left.priority))
             .then_with(|| right_primary.cmp(&left_primary))
             .then_with(|| left.connected_at.cmp(&right.connected_at))
     });

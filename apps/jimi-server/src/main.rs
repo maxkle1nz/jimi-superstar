@@ -286,6 +286,8 @@ struct ProviderBootstrapResponse {
     provider: String,
     model: String,
     routing_mode: String,
+    fallback_group: Option<String>,
+    priority: u32,
     status: String,
 }
 
@@ -2980,6 +2982,8 @@ async fn bootstrap_provider_lane(
         "codex",
         "gpt-5",
         "primary",
+        Some("core".into()),
+        100,
         "connected",
     );
 
@@ -3001,6 +3005,8 @@ async fn bootstrap_provider_lane(
             "provider": provider.provider.clone(),
             "model": provider.model.clone(),
             "routing_mode": provider.routing_mode.clone(),
+            "fallback_group": provider.fallback_group.clone(),
+            "priority": provider.priority,
             "status": provider.status.clone(),
         }),
     );
@@ -3048,6 +3054,8 @@ async fn bootstrap_provider_lane(
             provider: provider.provider,
             model: provider.model,
             routing_mode: provider.routing_mode,
+            fallback_group: provider.fallback_group,
+            priority: provider.priority,
             status: provider.status,
         }),
     ))
@@ -3064,6 +3072,8 @@ async fn bootstrap_provider_lane_anthropic(
         "anthropic",
         "claude-sonnet-4.5",
         "secondary",
+        Some("core".into()),
+        80,
         "connected",
     );
 
@@ -3085,6 +3095,8 @@ async fn bootstrap_provider_lane_anthropic(
             "provider": provider.provider.clone(),
             "model": provider.model.clone(),
             "routing_mode": provider.routing_mode.clone(),
+            "fallback_group": provider.fallback_group.clone(),
+            "priority": provider.priority,
             "status": provider.status.clone(),
         }),
     );
@@ -3132,6 +3144,8 @@ async fn bootstrap_provider_lane_anthropic(
             provider: provider.provider,
             model: provider.model,
             routing_mode: provider.routing_mode,
+            fallback_group: provider.fallback_group,
+            priority: provider.priority,
             status: provider.status,
         }),
     ))
@@ -4506,6 +4520,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">provider: ${escapeHtml(provider.provider)}</div>
             <div class="meta">model: ${escapeHtml(provider.model)}</div>
             <div class="meta">routing: ${escapeHtml(provider.routing_mode)}</div>
+            <div class="meta">fallback group: ${escapeHtml(provider.fallback_group || 'none')}</div>
+            <div class="meta">priority: ${escapeHtml(provider.priority)}</div>
             <div class="meta">status: ${escapeHtml(provider.status)}</div>
             <div class="meta">ready: ${escapeHtml(readinessMap.get(provider.provider)?.ready ? 'yes' : 'no')}</div>
             <div class="meta">auth source: ${escapeHtml(readinessMap.get(provider.provider)?.source || 'unknown')}</div>

@@ -122,6 +122,8 @@ impl DurableStore {
               provider TEXT NOT NULL,
               model TEXT NOT NULL,
               routing_mode TEXT NOT NULL,
+              fallback_group TEXT,
+              priority INTEGER NOT NULL DEFAULT 0,
               status TEXT NOT NULL,
               connected_at TEXT NOT NULL
             );
@@ -264,6 +266,16 @@ impl DurableStore {
             "summary_checkpoints",
             "compression_ratio",
             "ALTER TABLE summary_checkpoints ADD COLUMN compression_ratio REAL NOT NULL DEFAULT 1.0",
+        )?;
+        self.ensure_column_exists(
+            "provider_lanes",
+            "fallback_group",
+            "ALTER TABLE provider_lanes ADD COLUMN fallback_group TEXT",
+        )?;
+        self.ensure_column_exists(
+            "provider_lanes",
+            "priority",
+            "ALTER TABLE provider_lanes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
     }
@@ -415,13 +427,15 @@ impl DurableStore {
 
         for provider in runtime.providers.all() {
             tx.execute(
-                "INSERT OR REPLACE INTO provider_lanes (provider_lane_id, provider, model, routing_mode, status, connected_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR REPLACE INTO provider_lanes (provider_lane_id, provider, model, routing_mode, fallback_group, priority, status, connected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     provider.provider_lane_id,
                     provider.provider,
                     provider.model,
                     provider.routing_mode,
+                    provider.fallback_group,
+                    provider.priority as i64,
                     provider.status,
                     provider.connected_at.to_rfc3339(),
                 ],
@@ -860,7 +874,7 @@ impl DurableStore {
 
         {
             let mut stmt = self.conn.prepare(
-                "SELECT provider_lane_id, provider, model, routing_mode, status, connected_at FROM provider_lanes",
+                "SELECT provider_lane_id, provider, model, routing_mode, fallback_group, priority, status, connected_at FROM provider_lanes",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -868,17 +882,30 @@ impl DurableStore {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })?;
             for row in rows {
-                let (provider_lane_id, provider, model, routing_mode, status, connected_at) = row?;
+                let (
+                    provider_lane_id,
+                    provider,
+                    model,
+                    routing_mode,
+                    fallback_group,
+                    priority,
+                    status,
+                    connected_at,
+                ) = row?;
                 runtime.providers.insert_existing(ProviderLaneRecord {
                     provider_lane_id,
                     provider,
                     model,
                     routing_mode,
+                    fallback_group,
+                    priority: priority as u32,
                     status,
                     connected_at: parse_dt(&connected_at)?,
                 });
