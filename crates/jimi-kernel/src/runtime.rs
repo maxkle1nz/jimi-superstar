@@ -110,6 +110,10 @@ pub struct SummaryCheckpointRecord {
     pub source_band: String,
     pub source_capsule_ids: Vec<String>,
     pub semantic_digest: String,
+    pub source_capsule_count: usize,
+    pub source_text_length: usize,
+    pub digest_text_length: usize,
+    pub compression_ratio: f32,
     pub decisions_retained: Vec<String>,
     pub unresolved_items: Vec<String>,
     pub confidence_level: f32,
@@ -723,6 +727,10 @@ impl SummaryCheckpointRegistry {
         source_band: impl Into<String>,
         source_capsule_ids: Vec<String>,
         semantic_digest: impl Into<String>,
+        source_capsule_count: usize,
+        source_text_length: usize,
+        digest_text_length: usize,
+        compression_ratio: f32,
         decisions_retained: Vec<String>,
         unresolved_items: Vec<String>,
         confidence_level: f32,
@@ -733,6 +741,10 @@ impl SummaryCheckpointRegistry {
             source_band: source_band.into(),
             source_capsule_ids,
             semantic_digest: semantic_digest.into(),
+            source_capsule_count,
+            source_text_length,
+            digest_text_length,
+            compression_ratio,
             decisions_retained,
             unresolved_items,
             confidence_level,
@@ -1231,6 +1243,16 @@ fn create_summary_for_band(
         .map(|capsule| capsule.content.as_str())
         .collect::<Vec<_>>()
         .join(" | ");
+    let source_text_length = capsules
+        .iter()
+        .map(|capsule| capsule.content.chars().count())
+        .sum();
+    let digest_text_length = semantic_digest.chars().count();
+    let compression_ratio = if source_text_length == 0 {
+        1.0
+    } else {
+        (digest_text_length as f32) / (source_text_length as f32)
+    };
     let decisions_retained = capsules
         .iter()
         .filter_map(|capsule| capsule.intent_summary.clone())
@@ -1249,6 +1271,10 @@ fn create_summary_for_band(
             .map(|capsule| capsule.memory_capsule_id.clone())
             .collect(),
         semantic_digest,
+        capsules.len(),
+        source_text_length,
+        digest_text_length,
+        compression_ratio,
         decisions_retained,
         unresolved_items,
         confidence_level,

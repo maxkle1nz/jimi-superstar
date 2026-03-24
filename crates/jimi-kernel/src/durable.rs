@@ -192,6 +192,48 @@ impl DurableStore {
             );
             "#,
         )?;
+        self.ensure_column_exists(
+            "summary_checkpoints",
+            "source_capsule_count",
+            "ALTER TABLE summary_checkpoints ADD COLUMN source_capsule_count INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column_exists(
+            "summary_checkpoints",
+            "source_text_length",
+            "ALTER TABLE summary_checkpoints ADD COLUMN source_text_length INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column_exists(
+            "summary_checkpoints",
+            "digest_text_length",
+            "ALTER TABLE summary_checkpoints ADD COLUMN digest_text_length INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column_exists(
+            "summary_checkpoints",
+            "compression_ratio",
+            "ALTER TABLE summary_checkpoints ADD COLUMN compression_ratio REAL NOT NULL DEFAULT 1.0",
+        )?;
+        Ok(())
+    }
+
+    fn ensure_column_exists(
+        &self,
+        table: &str,
+        column: &str,
+        alter_sql: &str,
+    ) -> Result<(), DurableStoreError> {
+        let pragma = format!("PRAGMA table_info({table})");
+        let mut stmt = self.conn.prepare(&pragma)?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut present = false;
+        for row in rows {
+            if row? == column {
+                present = true;
+                break;
+            }
+        }
+        if !present {
+            self.conn.execute_batch(alter_sql)?;
+        }
         Ok(())
     }
 
@@ -372,14 +414,18 @@ impl DurableStore {
 
         for checkpoint in runtime.summary_checkpoints.all() {
             tx.execute(
-                "INSERT OR REPLACE INTO summary_checkpoints (summary_checkpoint_id, session_id, source_band, source_capsule_ids_json, semantic_digest, decisions_retained_json, unresolved_items_json, confidence_level, generated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT OR REPLACE INTO summary_checkpoints (summary_checkpoint_id, session_id, source_band, source_capsule_ids_json, semantic_digest, source_capsule_count, source_text_length, digest_text_length, compression_ratio, decisions_retained_json, unresolved_items_json, confidence_level, generated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     checkpoint.summary_checkpoint_id,
                     checkpoint.session_id.0,
                     checkpoint.source_band,
                     serde_json::to_string(&checkpoint.source_capsule_ids)?,
                     checkpoint.semantic_digest,
+                    checkpoint.source_capsule_count as i64,
+                    checkpoint.source_text_length as i64,
+                    checkpoint.digest_text_length as i64,
+                    checkpoint.compression_ratio,
                     serde_json::to_string(&checkpoint.decisions_retained)?,
                     serde_json::to_string(&checkpoint.unresolved_items)?,
                     checkpoint.confidence_level,
@@ -812,7 +858,7 @@ impl DurableStore {
 
         {
             let mut stmt = self.conn.prepare(
-                "SELECT summary_checkpoint_id, session_id, source_band, source_capsule_ids_json, semantic_digest, decisions_retained_json, unresolved_items_json, confidence_level, generated_at FROM summary_checkpoints ORDER BY generated_at ASC",
+                "SELECT summary_checkpoint_id, session_id, source_band, source_capsule_ids_json, semantic_digest, source_capsule_count, source_text_length, digest_text_length, compression_ratio, decisions_retained_json, unresolved_items_json, confidence_level, generated_at FROM summary_checkpoints ORDER BY generated_at ASC",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -821,10 +867,14 @@ impl DurableStore {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, f32>(7)?,
-                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, f32>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, f32>(11)?,
+                    row.get::<_, String>(12)?,
                 ))
             })?;
             for row in rows {
@@ -834,6 +884,10 @@ impl DurableStore {
                     source_band,
                     source_capsule_ids_json,
                     semantic_digest,
+                    source_capsule_count,
+                    source_text_length,
+                    digest_text_length,
+                    compression_ratio,
                     decisions_retained_json,
                     unresolved_items_json,
                     confidence_level,
@@ -847,6 +901,10 @@ impl DurableStore {
                         source_band,
                         source_capsule_ids: from_json_string(&source_capsule_ids_json)?,
                         semantic_digest,
+                        source_capsule_count: source_capsule_count as usize,
+                        source_text_length: source_text_length as usize,
+                        digest_text_length: digest_text_length as usize,
+                        compression_ratio,
                         decisions_retained: from_json_string(&decisions_retained_json)?,
                         unresolved_items: from_json_string(&unresolved_items_json)?,
                         confidence_level,

@@ -2054,6 +2054,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <strong>${escapeHtml(summary.source_band)} summary</strong>
             <div class="meta">checkpoint: ${escapeHtml(summary.summary_checkpoint_id)}</div>
             <div class="meta">confidence: ${escapeHtml(summary.confidence_level)}</div>
+            <div class="meta">capsules: ${escapeHtml(summary.source_capsule_count)}</div>
+            <div class="meta">compression: ${escapeHtml(summary.digest_text_length)}/${escapeHtml(summary.source_text_length)} (${escapeHtml(summary.compression_ratio)})</div>
             <div class="meta">digest: ${escapeHtml(summary.semantic_digest)}</div>
           </div>
         `).join('');
