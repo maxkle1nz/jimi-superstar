@@ -75,6 +75,18 @@ pub struct ProviderLaneRecord {
     pub connected_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnDispatchRecord {
+    pub dispatch_id: String,
+    pub turn_id: TurnId,
+    pub session_id: SessionId,
+    pub lane_id: LaneId,
+    pub provider_lane_id: String,
+    pub intent_summary: String,
+    pub status: String,
+    pub dispatched_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,
@@ -449,6 +461,45 @@ impl ProviderLaneRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct TurnDispatchRegistry {
+    dispatches: BTreeMap<String, TurnDispatchRecord>,
+}
+
+impl TurnDispatchRegistry {
+    pub fn dispatch(
+        &mut self,
+        turn_id: TurnId,
+        session_id: SessionId,
+        lane_id: LaneId,
+        provider_lane_id: impl Into<String>,
+        intent_summary: impl Into<String>,
+        status: impl Into<String>,
+    ) -> TurnDispatchRecord {
+        let dispatch = TurnDispatchRecord {
+            dispatch_id: format!("dispatch_{}", Uuid::now_v7()),
+            turn_id,
+            session_id,
+            lane_id,
+            provider_lane_id: provider_lane_id.into(),
+            intent_summary: intent_summary.into(),
+            status: status.into(),
+            dispatched_at: Utc::now(),
+        };
+        self.dispatches
+            .insert(dispatch.dispatch_id.clone(), dispatch.clone());
+        dispatch
+    }
+
+    pub fn all(&self) -> Vec<&TurnDispatchRecord> {
+        self.dispatches.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, dispatch: TurnDispatchRecord) {
+        self.dispatches.insert(dispatch.dispatch_id.clone(), dispatch);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -460,6 +511,7 @@ pub struct HouseInventory {
     pub slots: usize,
     pub fieldvault_artifacts: usize,
     pub provider_lanes: usize,
+    pub turn_dispatches: usize,
 }
 
 #[derive(Debug, Default)]
@@ -471,6 +523,7 @@ pub struct HouseRuntime {
     pub slots: SlotRegistry,
     pub fieldvault: FieldVaultRuntime,
     pub providers: ProviderLaneRegistry,
+    pub dispatches: TurnDispatchRegistry,
 }
 
 impl HouseRuntime {
@@ -508,6 +561,7 @@ impl HouseRuntime {
             slots: self.slots.all().len(),
             fieldvault_artifacts: self.fieldvault.all().len(),
             provider_lanes: self.providers.all().len(),
+            turn_dispatches: self.dispatches.all().len(),
         }
     }
 }
@@ -672,6 +726,14 @@ mod tests {
             "primary",
             "connected",
         );
+        runtime.dispatches.dispatch(
+            turn.turn_id.clone(),
+            session.session_id.clone(),
+            session.active_lane_id.clone(),
+            "provider.codex.primary",
+            "architect",
+            "queued",
+        );
 
         let db_path = temp_db_path();
         let mut store = DurableStore::open(&db_path).unwrap();
@@ -686,6 +748,7 @@ mod tests {
         assert_eq!(restored.slots.all().len(), 1);
         assert_eq!(restored.fieldvault.all().len(), 1);
         assert_eq!(restored.providers.all().len(), 1);
+        assert_eq!(restored.dispatches.all().len(), 1);
 
         let _ = std::fs::remove_file(db_path);
     }

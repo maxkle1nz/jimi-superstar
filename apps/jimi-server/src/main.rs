@@ -20,6 +20,7 @@ use jimi_kernel::{
     MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaStableMemory, SealLevel, SessionRecord, SlotBindingState, SubjectRef,
+    TurnDispatchRecord, TurnRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -40,6 +41,13 @@ struct HealthResponse {
 #[derive(Debug, Deserialize)]
 struct CreateSessionRequest {
     title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTurnRequest {
+    session_id: String,
+    intent_mode: String,
+    intent_summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +82,12 @@ struct ProviderBootstrapResponse {
     status: String,
 }
 
+#[derive(Debug, Serialize)]
+struct TurnBootstrapResponse {
+    turn: TurnRecord,
+    dispatch: TurnDispatchRecord,
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("JIMI_DB_PATH")
@@ -96,6 +110,8 @@ async fn main() {
         .route("/", get(cockpit))
         .route("/health", get(health))
         .route("/sessions", get(list_sessions).post(create_session))
+        .route("/turns", get(list_turns).post(create_turn))
+        .route("/dispatches", get(list_dispatches))
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
@@ -162,9 +178,110 @@ async fn create_session(
     Ok((StatusCode::CREATED, Json(session)))
 }
 
+async fn create_turn(
+    State(state): State<AppState>,
+    Json(request): Json<CreateTurnRequest>,
+) -> Result<(StatusCode, Json<TurnBootstrapResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let session_id = jimi_kernel::SessionId(request.session_id.clone());
+    let session = runtime
+        .sessions
+        .session(&session_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    let provider_lane = runtime
+        .providers
+        .all()
+        .into_iter()
+        .next()
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "connect a provider lane before dispatching a turn".to_string(),
+            )
+        })?;
+
+    let turn = runtime
+        .sessions
+        .create_turn(&session.session_id, &session.active_lane_id, request.intent_mode.clone())
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.turns".into(),
+        },
+        SubjectRef {
+            subject_type: "turn".into(),
+            subject_id: turn.turn_id.0.clone(),
+        },
+        EventType::TurnStarted,
+        Some(&turn.session_id),
+        Some(&turn.lane_id),
+        Some(&turn.turn_id),
+        serde_json::json!({
+            "intent_mode": request.intent_mode,
+            "intent_summary": request.intent_summary.clone(),
+        }),
+    );
+
+    let dispatch = runtime.dispatches.dispatch(
+        turn.turn_id.clone(),
+        turn.session_id.clone(),
+        turn.lane_id.clone(),
+        provider_lane.provider_lane_id.clone(),
+        request.intent_summary.clone(),
+        "queued",
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "router".into(),
+            actor_id: "house.dispatch".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: provider_lane.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        Some(&turn.session_id),
+        Some(&turn.lane_id),
+        Some(&turn.turn_id),
+        serde_json::json!({
+            "dispatch_id": dispatch.dispatch_id.clone(),
+            "provider_lane_id": provider_lane.provider_lane_id.clone(),
+            "provider": provider_lane.provider.clone(),
+            "model": provider_lane.model.clone(),
+            "intent_summary": request.intent_summary,
+        }),
+    );
+
+    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(2).cloned().collect();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    for event in new_events.into_iter().rev() {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((StatusCode::CREATED, Json(TurnBootstrapResponse { turn, dispatch })))
+}
+
 async fn list_events(State(state): State<AppState>) -> Json<Vec<EventEnvelope>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.events.all().to_vec())
+}
+
+async fn list_turns(State(state): State<AppState>) -> Json<Vec<TurnRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.sessions.turns().into_iter().cloned().collect())
+}
+
+async fn list_dispatches(State(state): State<AppState>) -> Json<Vec<TurnDispatchRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.dispatches.all().into_iter().cloned().collect())
 }
 
 async fn list_mandalas(State(state): State<AppState>) -> Json<Vec<MandalaManifest>> {
@@ -790,6 +907,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <button type="submit">Create Session</button>
             </form>
             <div class="list" id="session-list"></div>
+            <form class="session-form" id="turn-form">
+              <input id="turn-intent" placeholder="Turn intent summary" value="Ground the next implementation slice" />
+              <button type="submit">Dispatch Turn</button>
+            </form>
+            <div class="small" id="turn-status">awaiting routed turn</div>
+            <div class="list" id="turn-list"></div>
+            <div class="list" id="dispatch-list"></div>
           </div>
 
           <div class="panel">
@@ -829,6 +953,11 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const wsStatusEl = document.getElementById('ws-status');
       const sessionFormEl = document.getElementById('session-form');
       const sessionTitleEl = document.getElementById('session-title');
+      const turnFormEl = document.getElementById('turn-form');
+      const turnIntentEl = document.getElementById('turn-intent');
+      const turnStatusEl = document.getElementById('turn-status');
+      const turnListEl = document.getElementById('turn-list');
+      const dispatchListEl = document.getElementById('dispatch-list');
       const mandalaListEl = document.getElementById('mandala-list');
       const capsuleListEl = document.getElementById('capsule-list');
       const slotListEl = document.getElementById('slot-list');
@@ -843,6 +972,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
 
       const state = {
         sessions: [],
+        turns: [],
+        dispatches: [],
         events: [],
         mandalas: [],
         capsules: [],
@@ -861,6 +992,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['slots', inventory.slots ?? 0],
           ['fieldvault', inventory.fieldvault_artifacts ?? 0],
           ['providers', inventory.provider_lanes ?? 0],
+          ['dispatches', inventory.turn_dispatches ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -897,6 +1029,38 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">event: ${escapeHtml(event.event_id)}</div>
             <div class="meta">session: ${escapeHtml(event.session_id || 'none')}</div>
             <div class="meta">actor: ${escapeHtml(event.actor?.actor_id || 'unknown')}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderTurns() {
+        if (!state.turns.length) {
+          turnListEl.innerHTML = '<div class="empty">No turns dispatched yet.</div>';
+          return;
+        }
+        turnListEl.innerHTML = state.turns.map(turn => `
+          <div class="card">
+            <strong>${escapeHtml(turn.intent_mode)}</strong>
+            <div class="meta">turn: ${escapeHtml(turn.turn_id?.[0] || turn.turn_id || '')}</div>
+            <div class="meta">session: ${escapeHtml(turn.session_id?.[0] || turn.session_id || '')}</div>
+            <div class="meta">lane: ${escapeHtml(turn.lane_id?.[0] || turn.lane_id || '')}</div>
+            <div class="meta">state: ${escapeHtml(turn.state)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderDispatches() {
+        if (!state.dispatches.length) {
+          dispatchListEl.innerHTML = '<div class="empty">No provider dispatches yet.</div>';
+          return;
+        }
+        dispatchListEl.innerHTML = state.dispatches.map(dispatch => `
+          <div class="card">
+            <strong>${escapeHtml(dispatch.intent_summary)}</strong>
+            <div class="meta">dispatch: ${escapeHtml(dispatch.dispatch_id)}</div>
+            <div class="meta">provider lane: ${escapeHtml(dispatch.provider_lane_id)}</div>
+            <div class="meta">turn: ${escapeHtml(dispatch.turn_id?.[0] || dispatch.turn_id || '')}</div>
+            <div class="meta">status: ${escapeHtml(dispatch.status)}</div>
           </div>
         `).join('');
       }
@@ -992,6 +1156,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSessions();
       }
 
+      async function refreshTurns() {
+        const res = await fetch('/turns');
+        state.turns = await res.json();
+        renderTurns();
+      }
+
+      async function refreshDispatches() {
+        const res = await fetch('/dispatches');
+        state.dispatches = await res.json();
+        renderDispatches();
+      }
+
       async function refreshMandalas() {
         const res = await fetch('/mandalas');
         state.mandalas = await res.json();
@@ -1041,6 +1217,29 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         state.sessions.push(session);
         renderSessions();
         await refreshInventory();
+      }
+
+      async function createTurn(intentSummary) {
+        const session = state.sessions[0];
+        if (!session) {
+          throw new Error('create a session before dispatching a turn');
+        }
+        const sessionId = session.session_id?.[0] || session.session_id;
+        const res = await fetch('/turns', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            intent_mode: 'architect',
+            intent_summary: intentSummary
+          })
+        });
+        if (!res.ok) {
+          throw new Error('failed to create turn');
+        }
+        const result = await res.json();
+        turnStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.intent_mode}`;
+        await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
       }
 
       async function bootstrapCoreCapsule() {
@@ -1099,6 +1298,9 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             if (event.event_type === 'session_created') {
               refreshSessions().catch(console.error);
               refreshInventory().catch(console.error);
+            } else if (event.event_type === 'turn_started') {
+              refreshInventory().catch(console.error);
+              refreshTurns().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
               refreshMandalas().catch(console.error);
@@ -1110,6 +1312,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             } else if (event.event_type === 'engine_selected') {
               refreshInventory().catch(console.error);
               refreshProviders().catch(console.error);
+              refreshDispatches().catch(console.error);
             }
           } catch (error) {
             console.error(error);
@@ -1137,6 +1340,19 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           sessionTitleEl.value = '';
         } catch (error) {
           console.error(error);
+        }
+      });
+
+      turnFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const intentSummary = turnIntentEl.value.trim();
+        if (!intentSummary) return;
+        try {
+          await createTurn(intentSummary);
+          turnIntentEl.value = '';
+        } catch (error) {
+          console.error(error);
+          turnStatusEl.textContent = error.message;
         }
       });
 
@@ -1176,6 +1392,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       Promise.all([
         refreshInventory(),
         refreshSessions(),
+        refreshTurns(),
+        refreshDispatches(),
         refreshMandalas(),
         refreshCapsules(),
         refreshSlots(),

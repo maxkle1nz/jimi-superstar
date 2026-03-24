@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
     LaneRecord, MandalaManifest, PersonalitySlot, ProviderLaneRecord, SessionId, SessionRecord,
-    TurnId, TurnRecord,
+    TurnDispatchRecord, TurnId, TurnRecord,
 };
 
 #[derive(Debug, Error)]
@@ -121,6 +121,17 @@ impl DurableStore {
               routing_mode TEXT NOT NULL,
               status TEXT NOT NULL,
               connected_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS turn_dispatches (
+              dispatch_id TEXT PRIMARY KEY,
+              turn_id TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              lane_id TEXT NOT NULL,
+              provider_lane_id TEXT NOT NULL,
+              intent_summary TEXT NOT NULL,
+              status TEXT NOT NULL,
+              dispatched_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -260,6 +271,23 @@ impl DurableStore {
                     provider.routing_mode,
                     provider.status,
                     provider.connected_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for dispatch in runtime.dispatches.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO turn_dispatches (dispatch_id, turn_id, session_id, lane_id, provider_lane_id, intent_summary, status, dispatched_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    dispatch.dispatch_id,
+                    dispatch.turn_id.0,
+                    dispatch.session_id.0,
+                    dispatch.lane_id.0,
+                    dispatch.provider_lane_id,
+                    dispatch.intent_summary,
+                    dispatch.status,
+                    dispatch.dispatched_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -523,6 +551,46 @@ impl DurableStore {
                     routing_mode,
                     status,
                     connected_at: parse_dt(&connected_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT dispatch_id, turn_id, session_id, lane_id, provider_lane_id, intent_summary, status, dispatched_at FROM turn_dispatches",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    dispatch_id,
+                    turn_id,
+                    session_id,
+                    lane_id,
+                    provider_lane_id,
+                    intent_summary,
+                    status,
+                    dispatched_at,
+                ) = row?;
+                runtime.dispatches.insert_existing(TurnDispatchRecord {
+                    dispatch_id,
+                    turn_id: TurnId(turn_id),
+                    session_id: SessionId(session_id),
+                    lane_id: LaneId(lane_id),
+                    provider_lane_id,
+                    intent_summary,
+                    status,
+                    dispatched_at: parse_dt(&dispatched_at)?,
                 });
             }
         }

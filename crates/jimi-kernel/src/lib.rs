@@ -21,7 +21,8 @@ pub use mandala::{
 pub use runtime::{
     CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime,
     KernelError, LaneRecord, MandalaRegistry, ProviderLaneRecord, ProviderLaneRegistry,
-    SessionManager, SessionRecord, SlotRegistry, TurnRecord,
+    SessionManager, SessionRecord, SlotRegistry, TurnDispatchRecord, TurnDispatchRegistry,
+    TurnRecord,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};
