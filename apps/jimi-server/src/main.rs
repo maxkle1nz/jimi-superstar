@@ -1168,27 +1168,6 @@ fn refresh_world_state_cache(
     } else {
         Vec::new()
     };
-    let workspace_relations = if include_workspace {
-        workspace_entries
-            .iter()
-            .filter_map(|entry| {
-                let path = std::path::Path::new(&entry.path);
-                let parent = path.parent()?.display().to_string();
-                Some(WorldStateRelationRecord {
-                    relation_id: format!("wsrel::{scope}::{parent}=>{}", entry.path),
-                    scope: scope.clone(),
-                    from_node_id: format!("wsnode::{scope}::{parent}"),
-                    to_node_id: format!("wsnode::{scope}::{}", entry.path),
-                    relation_kind: "contains".into(),
-                    summary: format!("{parent} contains {}", entry.path),
-                    observed_at,
-                })
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
     let changed_files = Command::new("git")
         .arg("-C")
         .arg(house_root)
@@ -1206,6 +1185,21 @@ fn refresh_world_state_cache(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let changed_paths = changed_files
+        .iter()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let (_, path) = trimmed
+                .split_once(' ')
+                .map(|(kind, rest)| (kind.trim().to_string(), rest.trim().to_string()))
+                .unwrap_or_else(|| ("unknown".into(), trimmed.to_string()));
+            if path.is_empty() {
+                None
+            } else {
+                Some(path)
+            }
+        })
+        .collect::<Vec<_>>();
     let recent_deltas = changed_files
         .iter()
         .map(|line| {
@@ -1224,6 +1218,66 @@ fn refresh_world_state_cache(
             }
         })
         .collect::<Vec<_>>();
+    let workspace_relations = if include_workspace {
+        let mut relations = workspace_entries
+            .iter()
+            .filter_map(|entry| {
+                let path = std::path::Path::new(&entry.path);
+                let parent = path.parent()?.display().to_string();
+                Some(WorldStateRelationRecord {
+                    relation_id: format!("wsrel::{scope}::{parent}=>{}", entry.path),
+                    scope: scope.clone(),
+                    from_node_id: format!("wsnode::{scope}::{parent}"),
+                    to_node_id: format!("wsnode::{scope}::{}", entry.path),
+                    relation_kind: "contains".into(),
+                    summary: format!("{parent} contains {}", entry.path),
+                    observed_at,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut sibling_pairs = workspace_entries
+            .windows(2)
+            .filter_map(|window| {
+                let left = &window[0];
+                let right = &window[1];
+                let left_parent = std::path::Path::new(&left.path).parent()?.display().to_string();
+                let right_parent = std::path::Path::new(&right.path).parent()?.display().to_string();
+                if left_parent != right_parent || left_parent.is_empty() {
+                    return None;
+                }
+                Some(WorldStateRelationRecord {
+                    relation_id: format!("wsrel::{scope}::sibling::{}<>{}", left.path, right.path),
+                    scope: scope.clone(),
+                    from_node_id: format!("wsnode::{scope}::{}", left.path),
+                    to_node_id: format!("wsnode::{scope}::{}", right.path),
+                    relation_kind: "sibling_in_scope".into(),
+                    summary: format!("{} and {} share parent {}", left.path, right.path, left_parent),
+                    observed_at,
+                })
+            })
+            .take(memory_policy.world_state_entry_limit.max(1))
+            .collect::<Vec<_>>();
+
+        let mut changed_relations = changed_paths
+            .iter()
+            .map(|path| WorldStateRelationRecord {
+                relation_id: format!("wsrel::{scope}::changed::{path}"),
+                scope: scope.clone(),
+                from_node_id: format!("wsnode::{scope}::{}", house_root.display()),
+                to_node_id: format!("wsnode::{scope}::{path}"),
+                relation_kind: "changed_in_workspace".into(),
+                summary: format!("{path} changed in active workspace"),
+                observed_at,
+            })
+            .collect::<Vec<_>>();
+
+        relations.append(&mut sibling_pairs);
+        relations.append(&mut changed_relations);
+        relations
+    } else {
+        Vec::new()
+    };
 
     runtime
         .world_state_nodes
@@ -1289,7 +1343,7 @@ fn build_world_state_slice_from_cache(
         .into_iter()
         .rev()
         .take(memory_policy.world_state_entry_limit.max(1))
-        .map(|relation| relation.summary.clone())
+        .map(|relation| format!("[{}] {}", relation.relation_kind, relation.summary))
         .collect::<Vec<_>>();
     let changed_files = recent_deltas.clone();
     let git_dirty = !recent_deltas.is_empty();
