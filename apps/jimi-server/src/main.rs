@@ -100,6 +100,10 @@ struct UpdateMemoryPolicyRequest {
     promotion_confidence_threshold: f32,
     promote_to_stable_memory: bool,
     allow_fieldvault_sealing: bool,
+    world_state_scope: String,
+    world_state_entry_limit: usize,
+    world_state_process_limit: usize,
+    allow_world_state: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -730,7 +734,7 @@ fn assemble_context_packet(
         .into_iter()
         .map(|provider| format!("{}:{}", provider.provider, provider.model))
         .collect();
-    let world_state_slice = build_world_state_slice(house_root);
+    let world_state_slice = build_world_state_slice(house_root, &memory_policy);
 
     ContextPacketResponse {
         session_id: session_id.0.clone(),
@@ -993,7 +997,28 @@ fn compact_provider_response(output_text: &str) -> CompactedProviderResponse {
     }
 }
 
-fn build_world_state_slice(house_root: &PathBuf) -> WorldStateSlice {
+fn build_world_state_slice(
+    house_root: &PathBuf,
+    memory_policy: &MandalaMemoryPolicy,
+) -> WorldStateSlice {
+    if !memory_policy.allow_world_state {
+        return WorldStateSlice {
+            scope: "disabled".into(),
+            workspace_root: house_root.display().to_string(),
+            workspace_entry_count: 0,
+            workspace_entries: Vec::new(),
+            running_processes: Vec::new(),
+            observed_at: chrono::Utc::now(),
+        };
+    }
+
+    let scope = memory_policy.world_state_scope.trim().to_string();
+    let include_workspace = matches!(
+        scope.as_str(),
+        "workspace" | "workspace+process" | "workspace+health"
+    );
+    let include_processes = matches!(scope.as_str(), "process" | "workspace+process");
+
     let mut workspace_entries = std::fs::read_dir(house_root)
         .ok()
         .into_iter()
@@ -1019,38 +1044,50 @@ fn build_world_state_slice(house_root: &PathBuf) -> WorldStateSlice {
         .collect::<Vec<_>>();
     workspace_entries.sort_by(|a, b| a.path.cmp(&b.path));
     let workspace_entry_count = workspace_entries.len();
-    workspace_entries.truncate(8);
+    if include_workspace {
+        workspace_entries.truncate(memory_policy.world_state_entry_limit.max(1));
+    } else {
+        workspace_entries.clear();
+    }
 
-    let running_processes = Command::new("ps")
-        .args(["-axo", "pid=,comm="])
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|stdout| {
-            stdout
-                .lines()
-                .filter_map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        return None;
-                    }
-                    let mut parts = trimmed.split_whitespace();
-                    let pid = parts.next()?.parse::<u32>().ok()?;
-                    let command = parts.collect::<Vec<_>>().join(" ");
-                    if command.is_empty() {
-                        return None;
-                    }
-                    Some(WorldStateProcessEntry { pid, command })
-                })
-                .take(8)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let running_processes = if include_processes {
+        Command::new("ps")
+            .args(["-axo", "pid=,comm="])
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| {
+                stdout
+                    .lines()
+                    .filter_map(|line| {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            return None;
+                        }
+                        let mut parts = trimmed.split_whitespace();
+                        let pid = parts.next()?.parse::<u32>().ok()?;
+                        let command = parts.collect::<Vec<_>>().join(" ");
+                        if command.is_empty() {
+                            return None;
+                        }
+                        Some(WorldStateProcessEntry { pid, command })
+                    })
+                    .take(memory_policy.world_state_process_limit)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     WorldStateSlice {
-        scope: "workspace+process".into(),
+        scope,
         workspace_root: house_root.display().to_string(),
-        workspace_entry_count,
+        workspace_entry_count: if include_workspace {
+            workspace_entry_count
+        } else {
+            0
+        },
         workspace_entries,
         running_processes,
         observed_at: chrono::Utc::now(),
@@ -1452,6 +1489,10 @@ async fn update_mandala_memory_policy(
             request.promotion_confidence_threshold.clamp(0.0, 1.0);
         mandala.memory_policy.promote_to_stable_memory = request.promote_to_stable_memory;
         mandala.memory_policy.allow_fieldvault_sealing = request.allow_fieldvault_sealing;
+        mandala.memory_policy.world_state_scope = request.world_state_scope.trim().to_string();
+        mandala.memory_policy.world_state_entry_limit = request.world_state_entry_limit.max(1);
+        mandala.memory_policy.world_state_process_limit = request.world_state_process_limit.max(0);
+        mandala.memory_policy.allow_world_state = request.allow_world_state;
         mandala.memory_policy.clone()
     };
 
@@ -1475,6 +1516,10 @@ async fn update_mandala_memory_policy(
             "promotion_confidence_threshold": updated_policy.promotion_confidence_threshold,
             "promote_to_stable_memory": updated_policy.promote_to_stable_memory,
             "allow_fieldvault_sealing": updated_policy.allow_fieldvault_sealing,
+            "world_state_scope": updated_policy.world_state_scope,
+            "world_state_entry_limit": updated_policy.world_state_entry_limit,
+            "world_state_process_limit": updated_policy.world_state_process_limit,
+            "allow_world_state": updated_policy.allow_world_state,
         }),
     );
 
@@ -1557,9 +1602,9 @@ async fn world_state_status(State(state): State<AppState>) -> Json<WorldStateSta
     let memory_policy = runtime.active_memory_policy().unwrap_or_default();
     Json(WorldStateStatusResponse {
         active_mandala_id: active_mandala.map(|mandala| mandala.self_section.id.clone()),
-        preferred_scope: "workspace+process".into(),
-        lookup_sources: memory_policy.lookup_sources,
-        slice: build_world_state_slice(&state.house_root),
+        preferred_scope: memory_policy.world_state_scope.clone(),
+        lookup_sources: memory_policy.lookup_sources.clone(),
+        slice: build_world_state_slice(&state.house_root, &memory_policy),
     })
 }
 
@@ -2677,6 +2722,10 @@ fn sample_core_mandala() -> MandalaManifest {
             promote_to_stable_memory: true,
             allow_fieldvault_sealing: true,
             seal_privacy_classes: vec!["operator_private".into(), "sealed_candidate".into()],
+            world_state_scope: "workspace+process".into(),
+            world_state_entry_limit: 8,
+            world_state_process_limit: 8,
+            allow_world_state: true,
         },
         stable_memory: MandalaStableMemory::default(),
         active_snapshot: MandalaActiveSnapshot {
@@ -2980,11 +3029,19 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <input id="hot-limit" type="number" min="1" step="1" placeholder="hot" value="5" />
               <input id="relevant-limit" type="number" min="1" step="1" placeholder="relevant" value="6" />
               <input id="promotion-threshold" type="number" min="0" max="1" step="0.01" placeholder="threshold" value="0.88" />
+              <select id="world-state-scope">
+                <option value="workspace+process">world: workspace+process</option>
+                <option value="workspace">world: workspace</option>
+                <option value="process">world: process</option>
+              </select>
+              <input id="world-entry-limit" type="number" min="1" step="1" placeholder="world entries" value="8" />
+              <input id="world-process-limit" type="number" min="0" step="1" placeholder="world processes" value="8" />
               <button type="submit">Update Memory Policy</button>
             </form>
             <div class="action-row">
               <label class="small"><input id="stable-promotion-toggle" type="checkbox" checked /> stable promotion</label>
               <label class="small"><input id="fieldvault-sealing-toggle" type="checkbox" checked /> fieldvault sealing</label>
+              <label class="small"><input id="world-state-toggle" type="checkbox" checked /> world state</label>
               <div class="small" id="memory-policy-status">awaiting mandala policy edit</div>
             </div>
             <div class="list" id="control-plane-view"></div>
@@ -3108,8 +3165,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const hotLimitEl = document.getElementById('hot-limit');
       const relevantLimitEl = document.getElementById('relevant-limit');
       const promotionThresholdEl = document.getElementById('promotion-threshold');
+      const worldStateScopeEl = document.getElementById('world-state-scope');
+      const worldEntryLimitEl = document.getElementById('world-entry-limit');
+      const worldProcessLimitEl = document.getElementById('world-process-limit');
       const stablePromotionToggleEl = document.getElementById('stable-promotion-toggle');
       const fieldvaultSealingToggleEl = document.getElementById('fieldvault-sealing-toggle');
+      const worldStateToggleEl = document.getElementById('world-state-toggle');
       const memoryPolicyStatusEl = document.getElementById('memory-policy-status');
 
       const state = {
@@ -3282,6 +3343,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">active mandala: ${escapeHtml(world.active_mandala_id || 'none')}</div>
             <div class="meta">preferred scope: ${escapeHtml(world.preferred_scope || 'none')}</div>
             <div class="meta">lookup sources: ${escapeHtml((world.lookup_sources || []).join(' | ') || 'none')}</div>
+            <div class="meta">world state enabled: ${escapeHtml(slice.scope === 'disabled' ? 'no' : 'yes')}</div>
             <div class="meta">workspace root: ${escapeHtml(slice.workspace_root || 'none')}</div>
             <div class="meta">workspace entries: ${escapeHtml(slice.workspace_entry_count ?? 0)}</div>
             <div class="meta">processes shown: ${escapeHtml((slice.running_processes || []).length)}</div>
@@ -3407,8 +3469,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         hotLimitEl.value = policy.hot_context_limit ?? 5;
         relevantLimitEl.value = policy.relevant_context_limit ?? 5;
         promotionThresholdEl.value = policy.promotion_confidence_threshold ?? 0.9;
+        worldStateScopeEl.value = policy.world_state_scope || 'workspace+process';
+        worldEntryLimitEl.value = policy.world_state_entry_limit ?? 8;
+        worldProcessLimitEl.value = policy.world_state_process_limit ?? 8;
         stablePromotionToggleEl.checked = !!policy.promote_to_stable_memory;
         fieldvaultSealingToggleEl.checked = !!policy.allow_fieldvault_sealing;
+        worldStateToggleEl.checked = !!policy.allow_world_state;
         memoryPolicyStatusEl.textContent = `${mandala.self_section?.id || 'mandala'} policy loaded`;
       }
 
@@ -3616,6 +3682,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">promotion threshold: ${escapeHtml(packet.memory_policy?.promotion_confidence_threshold ?? 0)}</div>
             <div class="meta">stable promotion: ${escapeHtml(packet.memory_policy?.promote_to_stable_memory ? 'on' : 'off')}</div>
             <div class="meta">fieldvault sealing: ${escapeHtml(packet.memory_policy?.allow_fieldvault_sealing ? 'on' : 'off')}</div>
+            <div class="meta">world state: ${escapeHtml(packet.memory_policy?.allow_world_state ? 'on' : 'off')}</div>
+            <div class="meta">world scope policy: ${escapeHtml(packet.memory_policy?.world_state_scope || 'none')}</div>
+            <div class="meta">world entry limit: ${escapeHtml(packet.memory_policy?.world_state_entry_limit ?? 0)}</div>
+            <div class="meta">world process limit: ${escapeHtml(packet.memory_policy?.world_state_process_limit ?? 0)}</div>
             <div class="meta">seal classes: ${escapeHtml((packet.memory_policy?.seal_privacy_classes || []).join(' | ') || 'none')}</div>
             <div class="meta">stable rules: ${escapeHtml((packet.stable_memory?.learned_rules || []).length)}</div>
             <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
@@ -3725,7 +3795,11 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             relevant_context_limit: Number(relevantLimitEl.value || 5),
             promotion_confidence_threshold: Number(promotionThresholdEl.value || 0.9),
             promote_to_stable_memory: stablePromotionToggleEl.checked,
-            allow_fieldvault_sealing: fieldvaultSealingToggleEl.checked
+            allow_fieldvault_sealing: fieldvaultSealingToggleEl.checked,
+            world_state_scope: worldStateScopeEl.value,
+            world_state_entry_limit: Number(worldEntryLimitEl.value || 8),
+            world_state_process_limit: Number(worldProcessLimitEl.value || 8),
+            allow_world_state: worldStateToggleEl.checked
           })
         });
         if (!res.ok) {

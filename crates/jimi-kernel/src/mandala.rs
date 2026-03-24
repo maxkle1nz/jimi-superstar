@@ -52,6 +52,14 @@ pub struct MandalaMemoryPolicy {
     pub allow_fieldvault_sealing: bool,
     #[serde(default = "default_seal_privacy_classes")]
     pub seal_privacy_classes: Vec<String>,
+    #[serde(default = "default_world_state_scope")]
+    pub world_state_scope: String,
+    #[serde(default = "default_world_state_entry_limit")]
+    pub world_state_entry_limit: usize,
+    #[serde(default = "default_world_state_process_limit")]
+    pub world_state_process_limit: usize,
+    #[serde(default = "default_allow_world_state")]
+    pub allow_world_state: bool,
 }
 
 impl Default for MandalaMemoryPolicy {
@@ -65,6 +73,10 @@ impl Default for MandalaMemoryPolicy {
             promote_to_stable_memory: default_promote_to_stable_memory(),
             allow_fieldvault_sealing: default_allow_fieldvault_sealing(),
             seal_privacy_classes: default_seal_privacy_classes(),
+            world_state_scope: default_world_state_scope(),
+            world_state_entry_limit: default_world_state_entry_limit(),
+            world_state_process_limit: default_world_state_process_limit(),
+            allow_world_state: default_allow_world_state(),
         }
     }
 }
@@ -99,6 +111,22 @@ fn default_allow_fieldvault_sealing() -> bool {
 
 fn default_seal_privacy_classes() -> Vec<String> {
     vec!["operator_private".into(), "sealed_candidate".into()]
+}
+
+fn default_world_state_scope() -> String {
+    "workspace+process".into()
+}
+
+fn default_world_state_entry_limit() -> usize {
+    8
+}
+
+fn default_world_state_process_limit() -> usize {
+    8
+}
+
+fn default_allow_world_state() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
