@@ -358,6 +358,14 @@ struct CapsuleDeactivationResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CapsuleUninstallResponse {
+    package_id: String,
+    capsule_id: String,
+    install_status: String,
+    had_active_slot: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryPolicyUpdateResponse {
     mandala_id: String,
     memory_policy: MandalaMemoryPolicy,
@@ -516,6 +524,10 @@ async fn main() {
         .route(
             "/capsule-packages/{package_id}/deactivate",
             post(deactivate_capsule_package),
+        )
+        .route(
+            "/capsule-packages/{package_id}/uninstall",
+            post(uninstall_capsule_package),
         )
         .route(
             "/capsule-packages/{package_id}/export",
@@ -2835,6 +2847,76 @@ async fn deactivate_capsule_package(
             capsule_id: updated_package.capsule_id,
             slot_id: slot,
             slot_state,
+        }),
+    ))
+}
+
+async fn uninstall_capsule_package(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleUninstallResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    let active_slot = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find(|slot| slot.capsule_id.as_deref() == Some(package.capsule_id.as_str()))
+        .map(|slot| slot.slot_id.clone());
+
+    if let Some(slot_id) = &active_slot {
+        runtime
+            .slots
+            .unbind(slot_id)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    }
+
+    let updated_package = runtime
+        .capsule_packages
+        .update_install_status(&package_id, "uninstalled")
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.marketplace".into(),
+        },
+        SubjectRef {
+            subject_type: "capsule_package".into(),
+            subject_id: updated_package.package_id.clone(),
+        },
+        EventType::CapsuleInstalled,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": updated_package.package_id,
+            "capsule_id": updated_package.capsule_id,
+            "install_status": updated_package.install_status,
+            "change_kind": "uninstalled",
+            "had_active_slot": active_slot.is_some(),
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(CapsuleUninstallResponse {
+            package_id: updated_package.package_id,
+            capsule_id: updated_package.capsule_id,
+            install_status: updated_package.install_status,
+            had_active_slot: active_slot.is_some(),
         }),
     ))
 }
@@ -5482,6 +5564,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
                 <button onclick="requestCapsuleInstall('${escapeHtml(entry.package_id)}')">Install</button>
                 <button onclick="activateCapsulePackage('${escapeHtml(entry.package_id)}')">Activate</button>
                 <button onclick="deactivateCapsulePackage('${escapeHtml(entry.package_id)}')">Deactivate</button>
+                <button onclick="uninstallCapsulePackage('${escapeHtml(entry.package_id)}')">Uninstall</button>
                 <button onclick="exportCapsulePackage('${escapeHtml(entry.package_id)}')">Export</button>
               </div>
             </div>
@@ -6369,6 +6452,29 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         });
         if (!res.ok) {
           throw new Error('failed to deactivate capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshSlots(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function uninstallCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for uninstall');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/uninstall`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to uninstall capsule package');
         }
         await Promise.all([
           refreshCapsulePackages(),
