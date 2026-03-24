@@ -192,6 +192,14 @@ impl DurableStore {
               confidence_level REAL NOT NULL,
               created_at TEXT NOT NULL
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_capsules_fts USING fts5(
+              memory_capsule_id UNINDEXED,
+              session_id UNINDEXED,
+              room_id UNINDEXED,
+              content,
+              intent_summary
+            );
             "#,
         )?;
         self.ensure_column_exists(
@@ -422,6 +430,21 @@ impl DurableStore {
                     capsule.privacy_class,
                     capsule.band,
                     capsule.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        tx.execute("DELETE FROM memory_capsules_fts", [])?;
+        for capsule in runtime.memory_capsules.all() {
+            tx.execute(
+                "INSERT INTO memory_capsules_fts (memory_capsule_id, session_id, room_id, content, intent_summary)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    capsule.memory_capsule_id,
+                    capsule.session_id.0,
+                    capsule.room_id,
+                    capsule.content,
+                    capsule.intent_summary,
                 ],
             )?;
         }
@@ -1057,12 +1080,44 @@ impl DurableStore {
         limit: usize,
     ) -> Result<Vec<MemoryCapsuleRecord>, DurableStoreError> {
         let limit = limit.max(1).min(32) as i64;
-        let like_pattern = format!("%{}%", query.trim().to_lowercase());
+        let trimmed_query = query.trim();
+        let like_pattern = format!("%{}%", trimmed_query.to_lowercase());
+        let fts_query = sanitize_fts_query(trimmed_query);
         let session_scope = session_id.unwrap_or_default().to_string();
         let room_scope = room_id.unwrap_or_default().to_string();
 
-        let (sql, params_vec): (&str, Vec<&dyn rusqlite::ToSql>) = match scope {
-            "session" => (
+        let use_fts = !fts_query.is_empty();
+        let (sql, params_vec): (&str, Vec<&dyn rusqlite::ToSql>) = match (scope, use_fts) {
+            ("session", true) => (
+                "SELECT mc.memory_capsule_id, mc.session_id, mc.room_id, mc.lane_id, mc.turn_id, mc.role, mc.content, mc.intent_summary, mc.relevance_score, mc.confidence_level, mc.privacy_class, mc.band, mc.created_at
+                 FROM memory_capsules_fts
+                 JOIN memory_capsules mc ON mc.memory_capsule_id = memory_capsules_fts.memory_capsule_id
+                 WHERE mc.session_id = ?1
+                   AND memory_capsules_fts MATCH ?2
+                 ORDER BY bm25(memory_capsules_fts), mc.relevance_score DESC, mc.created_at DESC
+                 LIMIT ?3",
+                vec![&session_scope, &fts_query, &limit],
+            ),
+            ("room", true) => (
+                "SELECT mc.memory_capsule_id, mc.session_id, mc.room_id, mc.lane_id, mc.turn_id, mc.role, mc.content, mc.intent_summary, mc.relevance_score, mc.confidence_level, mc.privacy_class, mc.band, mc.created_at
+                 FROM memory_capsules_fts
+                 JOIN memory_capsules mc ON mc.memory_capsule_id = memory_capsules_fts.memory_capsule_id
+                 WHERE mc.room_id = ?1
+                   AND memory_capsules_fts MATCH ?2
+                 ORDER BY bm25(memory_capsules_fts), mc.relevance_score DESC, mc.created_at DESC
+                 LIMIT ?3",
+                vec![&room_scope, &fts_query, &limit],
+            ),
+            (_, true) => (
+                "SELECT mc.memory_capsule_id, mc.session_id, mc.room_id, mc.lane_id, mc.turn_id, mc.role, mc.content, mc.intent_summary, mc.relevance_score, mc.confidence_level, mc.privacy_class, mc.band, mc.created_at
+                 FROM memory_capsules_fts
+                 JOIN memory_capsules mc ON mc.memory_capsule_id = memory_capsules_fts.memory_capsule_id
+                 WHERE memory_capsules_fts MATCH ?1
+                 ORDER BY bm25(memory_capsules_fts), mc.relevance_score DESC, mc.created_at DESC
+                 LIMIT ?2",
+                vec![&fts_query, &limit],
+            ),
+            ("session", false) => (
                 "SELECT memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at
                  FROM memory_capsules
                  WHERE session_id = ?1
@@ -1071,7 +1126,7 @@ impl DurableStore {
                  LIMIT ?3",
                 vec![&session_scope, &like_pattern, &limit],
             ),
-            "room" => (
+            ("room", false) => (
                 "SELECT memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at
                  FROM memory_capsules
                  WHERE room_id = ?1
@@ -1148,6 +1203,17 @@ impl DurableStore {
 
 fn parse_dt(value: &str) -> Result<DateTime<Utc>, DurableStoreError> {
     Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+}
+
+fn sanitize_fts_query(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn from_json_string<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, DurableStoreError> {
