@@ -21,7 +21,7 @@ use jimi_kernel::{
     MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaStableMemory, MemoryCapsuleRecord, SealLevel, SessionRecord,
-    SlotBindingState, SubjectRef, TurnDispatchRecord, TurnRecord,
+    SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -101,6 +101,7 @@ struct DispatchExecutionResponse {
 struct ContextPacketResponse {
     session_id: String,
     hot_capsules: Vec<MemoryCapsuleRecord>,
+    summary_checkpoints: Vec<SummaryCheckpointRecord>,
     active_snapshot: Option<MandalaActiveSnapshot>,
     providers: Vec<String>,
 }
@@ -133,6 +134,7 @@ async fn main() {
         .route("/dispatches/execute-latest", post(execute_latest_dispatch))
         .route("/dispatches/execute-latest-live", post(execute_latest_dispatch_live))
         .route("/memory/capsules", get(list_memory_capsules))
+        .route("/memory/summaries", get(list_summary_checkpoints))
         .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
@@ -270,6 +272,7 @@ async fn create_turn(
         "session_open",
         "hot",
     );
+    runtime.refresh_memory_for_session(&turn.session_id);
 
     runtime.events.append(
         ActorRef {
@@ -324,6 +327,13 @@ async fn list_memory_capsules(State(state): State<AppState>) -> Json<Vec<MemoryC
     Json(runtime.memory_capsules.all().into_iter().cloned().collect())
 }
 
+async fn list_summary_checkpoints(
+    State(state): State<AppState>,
+) -> Json<Vec<SummaryCheckpointRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.summary_checkpoints.all().into_iter().cloned().collect())
+}
+
 async fn context_packet(
     axum::extract::Path(session_id): axum::extract::Path<String>,
     State(state): State<AppState>,
@@ -351,6 +361,18 @@ async fn context_packet(
         .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok())
         .map(|mandala| mandala.active_snapshot.clone());
 
+    let summary_checkpoints = runtime
+        .summary_checkpoints
+        .by_session(&session_id)
+        .into_iter()
+        .rev()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
     let providers = runtime
         .providers
         .all()
@@ -361,6 +383,7 @@ async fn context_packet(
     Ok(Json(ContextPacketResponse {
         session_id: session_id.0,
         hot_capsules,
+        summary_checkpoints,
         active_snapshot,
         providers,
     }))
@@ -435,6 +458,7 @@ async fn execute_latest_dispatch(
         "session_open",
         "hot",
     );
+    runtime.refresh_memory_for_session(&completed_turn.session_id);
 
     runtime.events.append(
         ActorRef {
@@ -565,6 +589,7 @@ async fn execute_latest_dispatch_live(
         "session_open",
         "hot",
     );
+    runtime.refresh_memory_for_session(&completed_turn.session_id);
 
     runtime.events.append(
         ActorRef {
@@ -1304,6 +1329,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <div class="list" id="memory-capsule-list"></div>
+            <div class="list" id="summary-list"></div>
             <div class="list" id="context-packet-view"></div>
           </div>
         </div>
@@ -1344,6 +1370,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const providerStatusEl = document.getElementById('provider-status');
       const contextStatusEl = document.getElementById('context-status');
       const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
+      const summaryListEl = document.getElementById('summary-list');
       const contextPacketViewEl = document.getElementById('context-packet-view');
 
       const state = {
@@ -1351,6 +1378,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         turns: [],
         dispatches: [],
         memoryCapsules: [],
+        summaries: [],
         contextPacket: null,
         events: [],
         mandalas: [],
@@ -1371,6 +1399,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['fieldvault', inventory.fieldvault_artifacts ?? 0],
           ['providers', inventory.provider_lanes ?? 0],
           ['dispatches', inventory.turn_dispatches ?? 0],
+          ['summaries', inventory.summary_checkpoints ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -1549,10 +1578,27 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
             <div class="meta">providers: ${escapeHtml((packet.providers || []).join(', ') || 'none')}</div>
             <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
+            <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
             <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
+            <div class="meta">blockers: ${escapeHtml((packet.active_snapshot?.blockers || []).join(' | ') || 'none')}</div>
             <div class="meta">next actions: ${escapeHtml((packet.active_snapshot?.next_actions || []).join(' | ') || 'none')}</div>
           </div>
         `;
+      }
+
+      function renderSummaries() {
+        if (!state.summaries.length) {
+          summaryListEl.innerHTML = '<div class="empty">No summary checkpoints yet.</div>';
+          return;
+        }
+        summaryListEl.innerHTML = state.summaries.slice(-4).reverse().map(summary => `
+          <div class="card">
+            <strong>${escapeHtml(summary.source_band)} summary</strong>
+            <div class="meta">checkpoint: ${escapeHtml(summary.summary_checkpoint_id)}</div>
+            <div class="meta">confidence: ${escapeHtml(summary.confidence_level)}</div>
+            <div class="meta">digest: ${escapeHtml(summary.semantic_digest)}</div>
+          </div>
+        `).join('');
       }
 
       async function refreshInventory() {
@@ -1615,6 +1661,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderMemoryCapsules();
       }
 
+      async function refreshSummaries() {
+        const res = await fetch('/memory/summaries');
+        state.summaries = await res.json();
+        renderSummaries();
+      }
+
       async function refreshContextPacket() {
         const session = state.sessions[0];
         if (!session) {
@@ -1648,7 +1700,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshSummaries(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -1676,6 +1728,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
+          refreshSummaries(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -1694,6 +1747,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
+          refreshSummaries(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -1712,6 +1766,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
+          refreshSummaries(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -1778,12 +1833,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
+              refreshSummaries().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
               refreshInventory().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
+              refreshSummaries().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
@@ -1902,6 +1959,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshArtifacts(),
         refreshProviders(),
         refreshMemoryCapsules(),
+        refreshSummaries(),
         refreshContextPacket(),
         refreshEvents()
       ])

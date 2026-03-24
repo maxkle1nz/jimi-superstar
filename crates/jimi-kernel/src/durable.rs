@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
     LaneRecord, MandalaManifest, MemoryCapsuleRecord, PersonalitySlot, ProviderLaneRecord,
-    SessionId, SessionRecord, TurnDispatchRecord, TurnId, TurnRecord,
+    SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
 };
 
 #[derive(Debug, Error)]
@@ -147,6 +147,18 @@ impl DurableStore {
               privacy_class TEXT NOT NULL,
               band TEXT NOT NULL,
               created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS summary_checkpoints (
+              summary_checkpoint_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              source_band TEXT NOT NULL,
+              source_capsule_ids_json TEXT NOT NULL,
+              semantic_digest TEXT NOT NULL,
+              decisions_retained_json TEXT NOT NULL,
+              unresolved_items_json TEXT NOT NULL,
+              confidence_level REAL NOT NULL,
+              generated_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -324,6 +336,24 @@ impl DurableStore {
                     capsule.privacy_class,
                     capsule.band,
                     capsule.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for checkpoint in runtime.summary_checkpoints.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO summary_checkpoints (summary_checkpoint_id, session_id, source_band, source_capsule_ids_json, semantic_digest, decisions_retained_json, unresolved_items_json, confidence_level, generated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    checkpoint.summary_checkpoint_id,
+                    checkpoint.session_id.0,
+                    checkpoint.source_band,
+                    serde_json::to_string(&checkpoint.source_capsule_ids)?,
+                    checkpoint.semantic_digest,
+                    serde_json::to_string(&checkpoint.decisions_retained)?,
+                    serde_json::to_string(&checkpoint.unresolved_items)?,
+                    checkpoint.confidence_level,
+                    checkpoint.generated_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -679,6 +709,49 @@ impl DurableStore {
                     privacy_class,
                     band,
                     created_at: parse_dt(&created_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT summary_checkpoint_id, session_id, source_band, source_capsule_ids_json, semantic_digest, decisions_retained_json, unresolved_items_json, confidence_level, generated_at FROM summary_checkpoints ORDER BY generated_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, f32>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    summary_checkpoint_id,
+                    session_id,
+                    source_band,
+                    source_capsule_ids_json,
+                    semantic_digest,
+                    decisions_retained_json,
+                    unresolved_items_json,
+                    confidence_level,
+                    generated_at,
+                ) = row?;
+                runtime.summary_checkpoints.insert_existing(SummaryCheckpointRecord {
+                    summary_checkpoint_id,
+                    session_id: SessionId(session_id),
+                    source_band,
+                    source_capsule_ids: from_json_string(&source_capsule_ids_json)?,
+                    semantic_digest,
+                    decisions_retained: from_json_string(&decisions_retained_json)?,
+                    unresolved_items: from_json_string(&unresolved_items_json)?,
+                    confidence_level,
+                    generated_at: parse_dt(&generated_at)?,
                 });
             }
         }

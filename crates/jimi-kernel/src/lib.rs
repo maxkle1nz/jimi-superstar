@@ -22,7 +22,8 @@ pub use runtime::{
     CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime,
     KernelError, LaneRecord, MandalaRegistry, MemoryCapsuleRecord, MemoryCapsuleRegistry,
     ProviderLaneRecord, ProviderLaneRegistry, SessionManager, SessionRecord, SlotRegistry,
-    TurnDispatchRecord, TurnDispatchRegistry, TurnRecord,
+    SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord, TurnDispatchRegistry,
+    TurnRecord,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};

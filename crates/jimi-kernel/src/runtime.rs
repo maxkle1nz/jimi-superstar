@@ -103,6 +103,19 @@ pub struct MemoryCapsuleRecord {
     pub created_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryCheckpointRecord {
+    pub summary_checkpoint_id: String,
+    pub session_id: SessionId,
+    pub source_band: String,
+    pub source_capsule_ids: Vec<String>,
+    pub semantic_digest: String,
+    pub decisions_retained: Vec<String>,
+    pub unresolved_items: Vec<String>,
+    pub confidence_level: f32,
+    pub generated_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,
@@ -293,6 +306,12 @@ impl MandalaRegistry {
 
     pub fn ids(&self) -> Vec<&str> {
         self.mandalas.keys().map(String::as_str).collect()
+    }
+
+    pub fn get_mut(&mut self, mandala_id: &str) -> Result<&mut MandalaManifest, KernelError> {
+        self.mandalas
+            .get_mut(mandala_id)
+            .ok_or_else(|| KernelError::MandalaNotFound(mandala_id.into()))
     }
 }
 
@@ -601,6 +620,77 @@ impl MemoryCapsuleRegistry {
         self.capsules
             .insert(capsule.memory_capsule_id.clone(), capsule);
     }
+
+    pub fn reband_session(&mut self, session_id: &SessionId) {
+        let mut capsules: Vec<_> = self
+            .capsules
+            .values_mut()
+            .filter(|capsule| capsule.session_id.0 == session_id.0)
+            .collect();
+        capsules.sort_by_key(|capsule| capsule.created_at);
+        let total = capsules.len();
+        for (index, capsule) in capsules.into_iter().enumerate() {
+            let from_end = total.saturating_sub(index + 1);
+            capsule.band = if from_end < 5 {
+                "hot".into()
+            } else if from_end < 10 {
+                "warm".into()
+            } else {
+                "archive".into()
+            };
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SummaryCheckpointRegistry {
+    checkpoints: BTreeMap<String, SummaryCheckpointRecord>,
+}
+
+impl SummaryCheckpointRegistry {
+    pub fn create(
+        &mut self,
+        session_id: SessionId,
+        source_band: impl Into<String>,
+        source_capsule_ids: Vec<String>,
+        semantic_digest: impl Into<String>,
+        decisions_retained: Vec<String>,
+        unresolved_items: Vec<String>,
+        confidence_level: f32,
+    ) -> SummaryCheckpointRecord {
+        let checkpoint = SummaryCheckpointRecord {
+            summary_checkpoint_id: format!("summary_{}", Uuid::now_v7()),
+            session_id,
+            source_band: source_band.into(),
+            source_capsule_ids,
+            semantic_digest: semantic_digest.into(),
+            decisions_retained,
+            unresolved_items,
+            confidence_level,
+            generated_at: Utc::now(),
+        };
+        self.checkpoints.insert(
+            checkpoint.summary_checkpoint_id.clone(),
+            checkpoint.clone(),
+        );
+        checkpoint
+    }
+
+    pub fn all(&self) -> Vec<&SummaryCheckpointRecord> {
+        self.checkpoints.values().collect()
+    }
+
+    pub fn by_session(&self, session_id: &SessionId) -> Vec<&SummaryCheckpointRecord> {
+        self.checkpoints
+            .values()
+            .filter(|checkpoint| checkpoint.session_id.0 == session_id.0)
+            .collect()
+    }
+
+    pub fn insert_existing(&mut self, checkpoint: SummaryCheckpointRecord) {
+        self.checkpoints
+            .insert(checkpoint.summary_checkpoint_id.clone(), checkpoint);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,6 +706,7 @@ pub struct HouseInventory {
     pub provider_lanes: usize,
     pub turn_dispatches: usize,
     pub memory_capsules: usize,
+    pub summary_checkpoints: usize,
 }
 
 #[derive(Debug, Default)]
@@ -629,6 +720,7 @@ pub struct HouseRuntime {
     pub providers: ProviderLaneRegistry,
     pub dispatches: TurnDispatchRegistry,
     pub memory_capsules: MemoryCapsuleRegistry,
+    pub summary_checkpoints: SummaryCheckpointRegistry,
 }
 
 impl HouseRuntime {
@@ -668,7 +760,77 @@ impl HouseRuntime {
             provider_lanes: self.providers.all().len(),
             turn_dispatches: self.dispatches.all().len(),
             memory_capsules: self.memory_capsules.all().len(),
+            summary_checkpoints: self.summary_checkpoints.all().len(),
         }
+    }
+
+    pub fn refresh_memory_for_session(&mut self, session_id: &SessionId) -> Option<SummaryCheckpointRecord> {
+        self.memory_capsules.reband_session(session_id);
+
+        let hot_capsules: Vec<MemoryCapsuleRecord> = self
+            .memory_capsules
+            .by_session(session_id)
+            .into_iter()
+            .filter(|capsule| capsule.band == "hot")
+            .cloned()
+            .collect();
+
+        if hot_capsules.is_empty() {
+            return None;
+        }
+
+        let semantic_digest = hot_capsules
+            .iter()
+            .map(|capsule| capsule.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let decisions_retained = hot_capsules
+            .iter()
+            .filter_map(|capsule| capsule.intent_summary.clone())
+            .collect::<Vec<_>>();
+        let unresolved_items = hot_capsules
+            .iter()
+            .filter(|capsule| capsule.role == "operator")
+            .map(|capsule| capsule.content.clone())
+            .collect::<Vec<_>>();
+
+        let checkpoint = self.summary_checkpoints.create(
+            session_id.clone(),
+            "hot",
+            hot_capsules
+                .iter()
+                .map(|capsule| capsule.memory_capsule_id.clone())
+                .collect(),
+            semantic_digest.clone(),
+            decisions_retained.clone(),
+            unresolved_items.clone(),
+            0.86,
+        );
+
+        for slot in self.slots.all() {
+            if let Some(mandala_id) = &slot.active_mandala_id {
+                if let Ok(mandala) = self.mandalas.get_mut(mandala_id) {
+                    mandala.active_snapshot.current_goal = decisions_retained
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| semantic_digest.clone());
+                    mandala.active_snapshot.active_decisions = decisions_retained.clone();
+                    mandala.active_snapshot.blockers = unresolved_items.clone();
+                    mandala.active_snapshot.next_actions = hot_capsules
+                        .iter()
+                        .map(|capsule| capsule.content.clone())
+                        .rev()
+                        .take(3)
+                        .collect();
+                    mandala.active_snapshot.hot_context = hot_capsules
+                        .iter()
+                        .map(|capsule| capsule.content.clone())
+                        .collect();
+                }
+            }
+        }
+
+        Some(checkpoint)
     }
 }
 
