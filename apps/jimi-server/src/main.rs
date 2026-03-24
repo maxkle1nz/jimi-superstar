@@ -1549,18 +1549,67 @@ async fn run_latest_dispatch_live_once(
     };
 
     let adapter = resolve_provider_adapter(&provider_lane);
+    let adapter_label = provider_adapter_label(&adapter).to_string();
     let provider_lane_for_execution = provider_lane.clone();
-    let output_text = tokio::task::spawn_blocking(move || {
+    let adapter_for_execution = adapter.clone();
+    let output_result = tokio::task::spawn_blocking(move || {
         run_provider_adapter(
             &provider_lane_for_execution,
-            &adapter,
+            &adapter_for_execution,
             &house_root,
             &provider_prompt,
         )
     })
     .await
-    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-    .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let output_text = match output_result {
+        Ok(output) => output,
+        Err(error) => {
+            let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+            let failed_dispatch = runtime
+                .dispatches
+                .update_status(&dispatch.dispatch_id, "failed")
+                .map_err(|update_error| (StatusCode::BAD_REQUEST, update_error.to_string()))?;
+            let failed_turn = runtime
+                .sessions
+                .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Failed)
+                .map_err(|update_error| (StatusCode::BAD_REQUEST, update_error.to_string()))?;
+
+            runtime.events.append(
+                ActorRef {
+                    actor_type: "provider".into(),
+                    actor_id: provider_lane.provider_lane_id.clone(),
+                },
+                SubjectRef {
+                    subject_type: "dispatch".into(),
+                    subject_id: failed_dispatch.dispatch_id.clone(),
+                },
+                EventType::EngineDegraded,
+                Some(&failed_dispatch.session_id),
+                Some(&failed_dispatch.lane_id),
+                Some(&failed_turn.turn_id),
+                serde_json::json!({
+                    "dispatch_id": failed_dispatch.dispatch_id,
+                    "provider_lane_id": failed_dispatch.provider_lane_id,
+                    "provider": provider_lane.provider,
+                    "model": provider_lane.model,
+                    "adapter": adapter_label,
+                    "status": "failed",
+                    "reason": error,
+                }),
+            );
+
+            let new_event = runtime.events.all().last().cloned();
+            persist_runtime(&state, &runtime)?;
+            drop(runtime);
+
+            if let Some(event) = new_event {
+                let _ = state.events_tx.send(event);
+            }
+
+            return Err((StatusCode::BAD_GATEWAY, error));
+        }
+    };
     let compacted_response = compact_provider_response(&output_text);
 
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
@@ -1995,6 +2044,12 @@ async fn provider_readiness_status() -> Json<ProviderReadinessResponse> {
     Json(ProviderReadinessResponse {
         providers: detect_provider_credentials(),
     })
+}
+
+fn provider_credential_status(provider: &str) -> Option<ProviderCredentialStatus> {
+    detect_provider_credentials()
+        .into_iter()
+        .find(|status| status.provider == provider)
 }
 
 fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
@@ -2461,6 +2516,7 @@ async fn bootstrap_provider_lane(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ProviderBootstrapResponse>), (StatusCode, String)> {
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let readiness = provider_credential_status("codex");
 
     let provider = runtime.providers.connect(
         "provider.codex.primary",
@@ -2492,11 +2548,39 @@ async fn bootstrap_provider_lane(
         }),
     );
 
-    let new_event = runtime.events.all().last().cloned();
+    if let Some(readiness) = readiness {
+        runtime.events.append(
+            ActorRef {
+                actor_type: "house.auth".into(),
+                actor_id: "provider.readiness".into(),
+            },
+            SubjectRef {
+                subject_type: "provider_lane".into(),
+                subject_id: provider.provider_lane_id.clone(),
+            },
+            if readiness.ready {
+                EventType::EngineSelected
+            } else {
+                EventType::EngineDegraded
+            },
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "provider_lane_id": provider.provider_lane_id.clone(),
+                "provider": provider.provider.clone(),
+                "status": if readiness.ready { "ready" } else { "degraded" },
+                "credential_source": readiness.source,
+                "details": readiness.details,
+            }),
+        );
+    }
+
+    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(2).cloned().collect();
     persist_runtime(&state, &runtime)?;
     drop(runtime);
 
-    if let Some(event) = new_event {
+    for event in new_events.into_iter().rev() {
         let _ = state.events_tx.send(event);
     }
 
@@ -2516,6 +2600,7 @@ async fn bootstrap_provider_lane_anthropic(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ProviderBootstrapResponse>), (StatusCode, String)> {
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let readiness = provider_credential_status("anthropic");
 
     let provider = runtime.providers.connect(
         "provider.anthropic.secondary",
@@ -2547,11 +2632,39 @@ async fn bootstrap_provider_lane_anthropic(
         }),
     );
 
-    let new_event = runtime.events.all().last().cloned();
+    if let Some(readiness) = readiness {
+        runtime.events.append(
+            ActorRef {
+                actor_type: "house.auth".into(),
+                actor_id: "provider.readiness".into(),
+            },
+            SubjectRef {
+                subject_type: "provider_lane".into(),
+                subject_id: provider.provider_lane_id.clone(),
+            },
+            if readiness.ready {
+                EventType::EngineSelected
+            } else {
+                EventType::EngineDegraded
+            },
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "provider_lane_id": provider.provider_lane_id.clone(),
+                "provider": provider.provider.clone(),
+                "status": if readiness.ready { "ready" } else { "degraded" },
+                "credential_source": readiness.source,
+                "details": readiness.details,
+            }),
+        );
+    }
+
+    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(2).cloned().collect();
     persist_runtime(&state, &runtime)?;
     drop(runtime);
 
-    if let Some(event) = new_event {
+    for event in new_events.into_iter().rev() {
         let _ = state.events_tx.send(event);
     }
 
@@ -4590,7 +4703,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
-            } else if (event.event_type === 'engine_selected') {
+            } else if (event.event_type === 'engine_selected' || event.event_type === 'engine_degraded') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
