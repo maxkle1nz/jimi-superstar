@@ -62,6 +62,9 @@ struct AutonomyStatus {
     running: bool,
     cycles: u64,
     completed_dispatches: u64,
+    last_dispatch_id: Option<String>,
+    last_intent_summary: Option<String>,
+    last_selection_reason: Option<String>,
     last_error: Option<String>,
 }
 
@@ -72,6 +75,9 @@ impl Default for AutonomyStatus {
             running: false,
             cycles: 0,
             completed_dispatches: 0,
+            last_dispatch_id: None,
+            last_intent_summary: None,
+            last_selection_reason: None,
             last_error: None,
         }
     }
@@ -190,6 +196,12 @@ struct AutonomyStatusResponse {
     running: bool,
     cycles: u64,
     completed_dispatches: u64,
+    current_goal: Option<String>,
+    next_actions: Vec<String>,
+    awaiting_approval_count: usize,
+    last_dispatch_id: Option<String>,
+    last_intent_summary: Option<String>,
+    last_selection_reason: Option<String>,
     last_error: Option<String>,
 }
 
@@ -1530,6 +1542,12 @@ async fn run_latest_dispatch_live_once(
             &running_dispatch.intent_summary,
         );
 
+        if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+            autonomy_status.last_dispatch_id = Some(running_dispatch.dispatch_id.clone());
+            autonomy_status.last_intent_summary = Some(running_dispatch.intent_summary.clone());
+            autonomy_status.last_selection_reason = Some(selection_reason.clone());
+        }
+
         if let Some(reason) = approval_reason_for_dispatch(
             &running_dispatch.provider_lane_id,
             &provider_lane.provider,
@@ -1916,7 +1934,25 @@ async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatus
     })
 }
 
+fn current_mission_state(runtime: &HouseRuntime) -> (Option<String>, Vec<String>, usize) {
+    let active_mandala = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.as_ref())
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok());
+    let current_goal = active_mandala.map(|mandala| mandala.active_snapshot.current_goal.clone());
+    let next_actions = active_mandala
+        .map(|mandala| mandala.active_snapshot.next_actions.clone())
+        .unwrap_or_default();
+    let awaiting_approval_count = runtime.approvals.pending().len();
+    (current_goal, next_actions, awaiting_approval_count)
+}
+
 async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let (current_goal, next_actions, awaiting_approval_count) = current_mission_state(&runtime);
+    drop(runtime);
     let status = state
         .autonomy_status
         .lock()
@@ -1927,6 +1963,12 @@ async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusRe
         running: status.running,
         cycles: status.cycles,
         completed_dispatches: status.completed_dispatches,
+        current_goal,
+        next_actions,
+        awaiting_approval_count,
+        last_dispatch_id: status.last_dispatch_id,
+        last_intent_summary: status.last_intent_summary,
+        last_selection_reason: status.last_selection_reason,
         last_error: status.last_error,
     })
 }
@@ -1935,6 +1977,9 @@ async fn set_autonomy(
     State(state): State<AppState>,
     Json(request): Json<SetAutonomyRequest>,
 ) -> Result<Json<AutonomyStatusResponse>, (StatusCode, String)> {
+    let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let (current_goal, next_actions, awaiting_approval_count) = current_mission_state(&runtime);
+    drop(runtime);
     let mut status = state.autonomy_status.lock().map_err(internal_lock_error)?;
     status.enabled = request.enabled;
     Ok(Json(AutonomyStatusResponse {
@@ -1942,6 +1987,12 @@ async fn set_autonomy(
         running: status.running,
         cycles: status.cycles,
         completed_dispatches: status.completed_dispatches,
+        current_goal,
+        next_actions,
+        awaiting_approval_count,
+        last_dispatch_id: status.last_dispatch_id.clone(),
+        last_intent_summary: status.last_intent_summary.clone(),
+        last_selection_reason: status.last_selection_reason.clone(),
         last_error: status.last_error.clone(),
     }))
 }
@@ -3914,7 +3965,9 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           return;
         }
         const autonomy = state.autonomyStatus;
-        autonomyStatusLineEl.textContent = autonomy.enabled ? 'autonomy enabled' : 'autonomy paused';
+        autonomyStatusLineEl.textContent = autonomy.enabled
+          ? `autonomy enabled / ${autonomy.current_goal || 'no mission'}`
+          : 'autonomy paused';
         autonomyStatusViewEl.innerHTML = `
           <div class="card">
             <strong>Autonomy Loop</strong>
@@ -3922,6 +3975,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">running: ${escapeHtml(autonomy.running ? 'yes' : 'no')}</div>
             <div class="meta">cycles: ${escapeHtml(autonomy.cycles)}</div>
             <div class="meta">completed dispatches: ${escapeHtml(autonomy.completed_dispatches)}</div>
+            <div class="meta">current goal: ${escapeHtml(autonomy.current_goal || 'none')}</div>
+            <div class="meta">next actions: ${escapeHtml((autonomy.next_actions || []).join(' | ') || 'none')}</div>
+            <div class="meta">awaiting approvals: ${escapeHtml(autonomy.awaiting_approval_count ?? 0)}</div>
+            <div class="meta">last dispatch: ${escapeHtml(autonomy.last_dispatch_id || 'none')}</div>
+            <div class="meta">last intent: ${escapeHtml(autonomy.last_intent_summary || 'none')}</div>
+            <div class="meta">selection reason: ${escapeHtml(autonomy.last_selection_reason || 'none')}</div>
             <div class="meta">last error: ${escapeHtml(autonomy.last_error || 'none')}</div>
           </div>
         `;
