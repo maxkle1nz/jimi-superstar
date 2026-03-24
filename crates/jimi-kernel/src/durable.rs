@@ -1,0 +1,488 @@
+use std::path::Path;
+
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
+use thiserror::Error;
+
+use crate::{
+    CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
+    LaneRecord, MandalaManifest, PersonalitySlot, SessionId, SessionRecord, TurnId, TurnRecord,
+};
+
+#[derive(Debug, Error)]
+pub enum DurableStoreError {
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("kernel error: {0}")]
+    Kernel(#[from] KernelError),
+    #[error("chrono parse error: {0}")]
+    Chrono(#[from] chrono::ParseError),
+}
+
+pub struct DurableStore {
+    conn: Connection,
+}
+
+impl DurableStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, DurableStoreError> {
+        let conn = Connection::open(path)?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        let store = Self { conn };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    fn migrate(&self) -> Result<(), DurableStoreError> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+              session_id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              state TEXT NOT NULL,
+              active_lane_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS lanes (
+              lane_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              parent_lane_id TEXT,
+              state TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS turns (
+              turn_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              lane_id TEXT NOT NULL,
+              intent_mode TEXT NOT NULL,
+              state TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS events (
+              event_id TEXT PRIMARY KEY,
+              event_version TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              emitted_at TEXT NOT NULL,
+              sequence INTEGER NOT NULL,
+              session_id TEXT,
+              lane_id TEXT,
+              turn_id TEXT,
+              actor_json TEXT NOT NULL,
+              subject_json TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mandalas (
+              mandala_id TEXT PRIMARY KEY,
+              manifest_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS capsules (
+              capsule_id TEXT PRIMARY KEY,
+              mandala_id TEXT NOT NULL,
+              version INTEGER NOT NULL,
+              install_source TEXT NOT NULL,
+              installed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS slots (
+              slot_id TEXT PRIMARY KEY,
+              label TEXT NOT NULL,
+              capsule_id TEXT,
+              principal_id TEXT,
+              state TEXT NOT NULL,
+              unlock_required INTEGER NOT NULL,
+              active_mandala_id TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS fieldvault_artifacts (
+              artifact_id TEXT PRIMARY KEY,
+              capsule_id TEXT,
+              slot_id TEXT,
+              seal_level TEXT NOT NULL,
+              fld_path TEXT NOT NULL,
+              portable INTEGER NOT NULL,
+              machine_bound INTEGER NOT NULL,
+              sha256 TEXT,
+              plaintext_projection_ref TEXT
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
+    pub fn persist_runtime(&mut self, runtime: &HouseRuntime) -> Result<(), DurableStoreError> {
+        let tx = self.conn.transaction()?;
+
+        for session in runtime.sessions.sessions() {
+            tx.execute(
+                "INSERT OR REPLACE INTO sessions (session_id, title, state, active_lane_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    session.session_id.0,
+                    session.title,
+                    serde_json::to_string(&session.state)?,
+                    session.active_lane_id.0,
+                    session.created_at.to_rfc3339(),
+                    session.updated_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for lane in runtime.sessions.lanes() {
+            tx.execute(
+                "INSERT OR REPLACE INTO lanes (lane_id, session_id, parent_lane_id, state, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    lane.lane_id.0,
+                    lane.session_id.0,
+                    lane.parent_lane_id.as_ref().map(|id| id.0.clone()),
+                    serde_json::to_string(&lane.state)?,
+                    lane.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for turn in runtime.sessions.turns() {
+            tx.execute(
+                "INSERT OR REPLACE INTO turns (turn_id, session_id, lane_id, intent_mode, state, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    turn.turn_id.0,
+                    turn.session_id.0,
+                    turn.lane_id.0,
+                    turn.intent_mode,
+                    serde_json::to_string(&turn.state)?,
+                    turn.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for event in runtime.events.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO events (event_id, event_version, event_type, emitted_at, sequence, session_id, lane_id, turn_id, actor_json, subject_json, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    event.event_id,
+                    event.event_version,
+                    serde_json::to_string(&event.event_type)?,
+                    event.emitted_at.to_rfc3339(),
+                    event.sequence as i64,
+                    event.session_id,
+                    event.lane_id,
+                    event.turn_id,
+                    serde_json::to_string(&event.actor)?,
+                    serde_json::to_string(&event.subject)?,
+                    serde_json::to_string(&event.payload)?,
+                ],
+            )?;
+        }
+
+        for mandala in runtime.mandalas.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO mandalas (mandala_id, manifest_json) VALUES (?1, ?2)",
+                params![mandala.self_section.id, serde_json::to_string(mandala)?],
+            )?;
+        }
+
+        for capsule in runtime.capsules.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO capsules (capsule_id, mandala_id, version, install_source, installed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    capsule.capsule_id,
+                    capsule.mandala_id,
+                    capsule.version as i64,
+                    capsule.install_source,
+                    capsule.installed_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for slot in runtime.slots.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO slots (slot_id, label, capsule_id, principal_id, state, unlock_required, active_mandala_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    slot.slot_id,
+                    slot.label,
+                    slot.capsule_id,
+                    slot.principal_id,
+                    serde_json::to_string(&slot.state)?,
+                    slot.unlock_required as i64,
+                    slot.active_mandala_id,
+                ],
+            )?;
+        }
+
+        for artifact in runtime.fieldvault.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO fieldvault_artifacts (artifact_id, capsule_id, slot_id, seal_level, fld_path, portable, machine_bound, sha256, plaintext_projection_ref)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    artifact.artifact_id,
+                    artifact.capsule_id,
+                    artifact.slot_id,
+                    serde_json::to_string(&artifact.seal_level)?,
+                    artifact.fld_path,
+                    artifact.portable as i64,
+                    artifact.machine_bound as i64,
+                    artifact.sha256,
+                    artifact.plaintext_projection_ref,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn load_runtime(&self) -> Result<HouseRuntime, DurableStoreError> {
+        let mut runtime = HouseRuntime::default();
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT session_id, title, state, active_lane_id, created_at, updated_at FROM sessions ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            for row in rows {
+                let (session_id, title, state, active_lane_id, created_at, updated_at) = row?;
+                runtime.sessions.insert_session(SessionRecord {
+                    session_id: SessionId(session_id),
+                    title,
+                    state: from_json_string(&state)?,
+                    active_lane_id: LaneId(active_lane_id),
+                    created_at: parse_dt(&created_at)?,
+                    updated_at: parse_dt(&updated_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT lane_id, session_id, parent_lane_id, state, created_at FROM lanes ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (lane_id, session_id, parent_lane_id, state, created_at) = row?;
+                runtime.sessions.insert_lane(LaneRecord {
+                    lane_id: LaneId(lane_id),
+                    session_id: SessionId(session_id),
+                    parent_lane_id: parent_lane_id.map(LaneId),
+                    state: from_json_string(&state)?,
+                    created_at: parse_dt(&created_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT turn_id, session_id, lane_id, intent_mode, state, created_at FROM turns ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            for row in rows {
+                let (turn_id, session_id, lane_id, intent_mode, state, created_at) = row?;
+                runtime.sessions.insert_turn(TurnRecord {
+                    turn_id: TurnId(turn_id),
+                    session_id: SessionId(session_id),
+                    lane_id: LaneId(lane_id),
+                    intent_mode,
+                    state: from_json_string(&state)?,
+                    created_at: parse_dt(&created_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT event_id, event_version, event_type, emitted_at, sequence, session_id, lane_id, turn_id, actor_json, subject_json, payload_json
+                 FROM events ORDER BY sequence ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            })?;
+            let mut max_sequence = 0;
+            for row in rows {
+                let (
+                    event_id,
+                    event_version,
+                    event_type,
+                    emitted_at,
+                    sequence,
+                    session_id,
+                    lane_id,
+                    turn_id,
+                    actor,
+                    subject,
+                    payload,
+                ) = row?;
+                let event = EventEnvelope {
+                    event_id,
+                    event_version,
+                    event_type: from_json_string(&event_type)?,
+                    emitted_at: parse_dt(&emitted_at)?,
+                    sequence: sequence as u64,
+                    session_id,
+                    lane_id,
+                    turn_id,
+                    actor: from_json_string(&actor)?,
+                    subject: from_json_string(&subject)?,
+                    payload: from_json_string(&payload)?,
+                };
+                max_sequence = max_sequence.max(event.sequence);
+                runtime.events.push_existing(event);
+            }
+            runtime.events.set_next_sequence(max_sequence);
+        }
+
+        {
+            let mut stmt = self.conn.prepare("SELECT manifest_json FROM mandalas")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let mandala: MandalaManifest = from_json_string(&row?)?;
+                runtime.mandalas.install(mandala);
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT capsule_id, mandala_id, version, install_source, installed_at FROM capsules",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (capsule_id, mandala_id, version, install_source, installed_at) = row?;
+                runtime.capsules.insert_existing(CapsuleRecord {
+                    capsule_id,
+                    mandala_id,
+                    version: version as u32,
+                    install_source,
+                    installed_at: parse_dt(&installed_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT slot_id, label, capsule_id, principal_id, state, unlock_required, active_mandala_id FROM slots",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (slot_id, label, capsule_id, principal_id, state, unlock_required, active_mandala_id) = row?;
+                runtime.slots.insert_existing(PersonalitySlot {
+                    slot_id,
+                    label,
+                    capsule_id,
+                    principal_id,
+                    state: from_json_string(&state)?,
+                    unlock_required: unlock_required != 0,
+                    active_mandala_id,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT artifact_id, capsule_id, slot_id, seal_level, fld_path, portable, machine_bound, sha256, plaintext_projection_ref FROM fieldvault_artifacts",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?;
+            for row in rows {
+                let (artifact_id, capsule_id, slot_id, seal_level, fld_path, portable, machine_bound, sha256, plaintext_projection_ref) = row?;
+                runtime.fieldvault.insert_existing(FieldVaultArtifact {
+                    artifact_id,
+                    capsule_id,
+                    slot_id,
+                    seal_level: from_json_string(&seal_level)?,
+                    fld_path,
+                    portable: portable != 0,
+                    machine_bound: machine_bound != 0,
+                    sha256,
+                    plaintext_projection_ref,
+                });
+            }
+        }
+
+        Ok(runtime)
+    }
+}
+
+fn parse_dt(value: &str) -> Result<DateTime<Utc>, DurableStoreError> {
+    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+}
+
+fn from_json_string<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, DurableStoreError> {
+    Ok(serde_json::from_str(value)?)
+}

@@ -1,4 +1,5 @@
 pub mod capability;
+pub mod durable;
 pub mod event;
 pub mod fieldvault;
 pub mod ids;
@@ -8,6 +9,7 @@ pub mod session;
 pub mod slot;
 
 pub use capability::{CapabilityDescriptor, CapabilityType, SupportLevel};
+pub use durable::DurableStore;
 pub use event::{ActorRef, EventEnvelope, EventType, SubjectRef};
 pub use fieldvault::{FieldVaultArtifact, SealLevel};
 pub use ids::{LaneId, SessionId, TurnId};

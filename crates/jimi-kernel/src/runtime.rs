@@ -108,6 +108,14 @@ impl EventStore {
             .filter(|event| event.session_id.as_deref() == Some(session_id.0.as_str()))
             .collect()
     }
+
+    pub fn push_existing(&mut self, event: EventEnvelope) {
+        self.events.push(event);
+    }
+
+    pub fn set_next_sequence(&mut self, sequence: u64) {
+        self.next_sequence = sequence;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -183,6 +191,31 @@ impl SessionManager {
             .get(&turn_id.0)
             .ok_or_else(|| KernelError::TurnNotFound(turn_id.0.clone()))
     }
+
+    pub fn sessions(&self) -> Vec<&SessionRecord> {
+        self.sessions.values().collect()
+    }
+
+    pub fn lanes(&self) -> Vec<&LaneRecord> {
+        self.lanes.values().collect()
+    }
+
+    pub fn turns(&self) -> Vec<&TurnRecord> {
+        self.turns.values().collect()
+    }
+
+    pub fn insert_session(&mut self, session: SessionRecord) {
+        self.sessions
+            .insert(session.session_id.0.clone(), session);
+    }
+
+    pub fn insert_lane(&mut self, lane: LaneRecord) {
+        self.lanes.insert(lane.lane_id.0.clone(), lane);
+    }
+
+    pub fn insert_turn(&mut self, turn: TurnRecord) {
+        self.turns.insert(turn.turn_id.0.clone(), turn);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -236,6 +269,15 @@ impl CapsuleRegistry {
         self.capsules
             .get(capsule_id)
             .ok_or_else(|| KernelError::CapsuleNotFound(capsule_id.into()))
+    }
+
+    pub fn all(&self) -> Vec<&CapsuleRecord> {
+        self.capsules.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, capsule: CapsuleRecord) {
+        self.capsules
+            .insert(capsule.capsule_id.clone(), capsule);
     }
 }
 
@@ -299,6 +341,14 @@ impl SlotRegistry {
             .get(slot_id)
             .ok_or_else(|| KernelError::SlotNotFound(slot_id.into()))
     }
+
+    pub fn all(&self) -> Vec<&PersonalitySlot> {
+        self.slots.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, slot: PersonalitySlot) {
+        self.slots.insert(slot.slot_id.clone(), slot);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -334,6 +384,11 @@ impl FieldVaultRuntime {
 
     pub fn all(&self) -> Vec<&FieldVaultArtifact> {
         self.artifacts.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, artifact: FieldVaultArtifact) {
+        self.artifacts
+            .insert(artifact.artifact_id.clone(), artifact);
     }
 }
 
@@ -374,8 +429,12 @@ impl HouseRuntime {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
     use super::*;
     use crate::{
+        DurableStore,
         MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaExecutionPolicy, MandalaManifest,
         MandalaMemoryPolicy, MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory,
         SealLevel,
@@ -479,5 +538,68 @@ mod tests {
         assert_eq!(runtime.fieldvault.all().len(), 1);
         assert_eq!(artifact.seal_level, SealLevel::SacredShard);
         assert_eq!(artifact.fld_path, "/tmp/jimi-core.fld");
+    }
+
+    #[test]
+    fn durable_store_roundtrip_restores_runtime_state() {
+        let mut runtime = HouseRuntime::default();
+        let session = runtime.bootstrap_session("Persistent JIMI");
+        let turn = runtime
+            .sessions
+            .create_turn(&session.session_id, &session.active_lane_id, "architect")
+            .unwrap();
+        runtime.events.append(
+            ActorRef {
+                actor_type: "operator".into(),
+                actor_id: "max".into(),
+            },
+            SubjectRef {
+                subject_type: "turn".into(),
+                subject_id: turn.turn_id.0.clone(),
+            },
+            EventType::TurnStarted,
+            Some(&session.session_id),
+            Some(&session.active_lane_id),
+            Some(&turn.turn_id),
+            serde_json::json!({ "intent_mode": "architect" }),
+        );
+        runtime.mandalas.install(sample_mandala("jimi.persist"));
+        runtime
+            .capsules
+            .install("capsule:jimi.persist", "jimi.persist", 1, "test");
+        runtime.slots.define_slot("primary", "Primary");
+        runtime
+            .slots
+            .bind_capsule("primary", "capsule:jimi.persist", "jimi.persist", false)
+            .unwrap();
+        runtime.fieldvault.register_artifact(
+            Some("capsule:jimi.persist".into()),
+            Some("primary".into()),
+            SealLevel::CapsulePrivate,
+            "/tmp/jimi-persist.fld",
+            true,
+            false,
+        );
+
+        let db_path = temp_db_path();
+        let mut store = DurableStore::open(&db_path).unwrap();
+        store.persist_runtime(&runtime).unwrap();
+
+        let restored = store.load_runtime().unwrap();
+        assert_eq!(restored.events.all().len(), 2);
+        assert_eq!(restored.sessions.sessions().len(), 1);
+        assert_eq!(restored.sessions.turns().len(), 1);
+        assert_eq!(restored.mandalas.all().len(), 1);
+        assert_eq!(restored.capsules.all().len(), 1);
+        assert_eq!(restored.slots.all().len(), 1);
+        assert_eq!(restored.fieldvault.all().len(), 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    fn temp_db_path() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("jimi-kernel-test-{}.sqlite", uuid::Uuid::now_v7()));
+        path
     }
 }
