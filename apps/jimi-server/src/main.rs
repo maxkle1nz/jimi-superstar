@@ -27,7 +27,7 @@ use jimi_kernel::{
     MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
     MemoryCapsuleRecord, MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel,
     SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
-    TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord,
+    TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord, WorldStateRelationRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 use provider_adapter::{
@@ -1084,6 +1084,9 @@ fn refresh_world_state_cache(
         runtime
             .world_state_deltas
             .replace_scope("disabled", Vec::new());
+        runtime
+            .world_state_relations
+            .replace_scope("disabled", Vec::new());
         return;
     }
 
@@ -1134,6 +1137,26 @@ fn refresh_world_state_cache(
     } else {
         Vec::new()
     };
+    let workspace_relations = if include_workspace {
+        workspace_entries
+            .iter()
+            .filter_map(|entry| {
+                let path = std::path::Path::new(&entry.path);
+                let parent = path.parent()?.display().to_string();
+                Some(WorldStateRelationRecord {
+                    relation_id: format!("wsrel::{scope}::{parent}=>{}", entry.path),
+                    scope: scope.clone(),
+                    from_node_id: format!("wsnode::{scope}::{parent}"),
+                    to_node_id: format!("wsnode::{scope}::{}", entry.path),
+                    relation_kind: "contains".into(),
+                    summary: format!("{parent} contains {}", entry.path),
+                    observed_at,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
 
     let changed_files = Command::new("git")
         .arg("-C")
@@ -1177,6 +1200,9 @@ fn refresh_world_state_cache(
     runtime
         .world_state_deltas
         .replace_scope(&scope, recent_deltas);
+    runtime
+        .world_state_relations
+        .replace_scope(&scope, workspace_relations);
 }
 
 fn build_world_state_slice_from_cache(
@@ -1192,10 +1218,12 @@ fn build_world_state_slice_from_cache(
             git_dirty: false,
             cache_state: "disabled".into(),
             indexed_nodes: 0,
+            relation_count: 0,
             workspace_entry_count: 0,
             workspace_entries: Vec::new(),
             changed_files: Vec::new(),
             recent_deltas: Vec::new(),
+            recent_relations: Vec::new(),
             running_processes: Vec::new(),
             observed_at: chrono::Utc::now(),
         };
@@ -1205,7 +1233,9 @@ fn build_world_state_slice_from_cache(
     let include_processes = matches!(scope.as_str(), "process" | "workspace+process");
     let nodes = runtime.world_state_nodes.by_scope(&scope);
     let deltas = runtime.world_state_deltas.by_scope(&scope);
+    let relations = runtime.world_state_relations.by_scope(&scope);
     let indexed_nodes = nodes.len();
+    let relation_count = relations.len();
     let mut workspace_entries = nodes
         .into_iter()
         .map(|node| WorldStateWorkspaceEntry {
@@ -1223,6 +1253,12 @@ fn build_world_state_slice_from_cache(
         .rev()
         .take(memory_policy.world_state_entry_limit.max(1))
         .map(|delta| delta.summary.clone())
+        .collect::<Vec<_>>();
+    let recent_relations = relations
+        .into_iter()
+        .rev()
+        .take(memory_policy.world_state_entry_limit.max(1))
+        .map(|relation| relation.summary.clone())
         .collect::<Vec<_>>();
     let changed_files = recent_deltas.clone();
     let git_dirty = !recent_deltas.is_empty();
@@ -1277,10 +1313,12 @@ fn build_world_state_slice_from_cache(
         git_dirty,
         cache_state,
         indexed_nodes,
+        relation_count,
         workspace_entry_count,
         workspace_entries,
         changed_files,
         recent_deltas,
+        recent_relations,
         running_processes,
         observed_at: chrono::Utc::now(),
     }
@@ -4365,6 +4403,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">git dirty: ${escapeHtml(slice.git_dirty ? 'yes' : 'no')}</div>
             <div class="meta">cache state: ${escapeHtml(slice.cache_state || 'cold')}</div>
             <div class="meta">indexed nodes: ${escapeHtml(slice.indexed_nodes ?? 0)}</div>
+            <div class="meta">relations: ${escapeHtml(slice.relation_count ?? 0)}</div>
             <div class="meta">workspace entries: ${escapeHtml(slice.workspace_entry_count ?? 0)}</div>
             <div class="meta">processes shown: ${escapeHtml((slice.running_processes || []).length)}</div>
           </div>
@@ -4379,6 +4418,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="card">
             <strong>Recent Deltas</strong>
             ${((slice.recent_deltas || []).map(delta => `<div class="meta">- ${escapeHtml(delta)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Recent Relations</strong>
+            ${((slice.recent_relations || []).map(relation => `<div class="meta">- ${escapeHtml(relation)}</div>`).join('')) || '<div class="meta">- none</div>'}
           </div>
           <div class="card">
             <strong>Process Snapshot</strong>

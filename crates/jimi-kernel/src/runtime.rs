@@ -199,6 +199,17 @@ pub struct WorldStateDeltaRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldStateRelationRecord {
+    pub relation_id: String,
+    pub scope: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub relation_kind: String,
+    pub summary: String,
+    pub observed_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldStateProcessEntry {
     pub pid: u32,
     pub command: String,
@@ -212,10 +223,12 @@ pub struct WorldStateSlice {
     pub git_dirty: bool,
     pub cache_state: String,
     pub indexed_nodes: usize,
+    pub relation_count: usize,
     pub workspace_entry_count: usize,
     pub workspace_entries: Vec<WorldStateWorkspaceEntry>,
     pub changed_files: Vec<String>,
     pub recent_deltas: Vec<String>,
+    pub recent_relations: Vec<String>,
     pub running_processes: Vec<WorldStateProcessEntry>,
     pub observed_at: chrono::DateTime<Utc>,
 }
@@ -1171,6 +1184,37 @@ impl WorldStateDeltaRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct WorldStateRelationRegistry {
+    relations: BTreeMap<String, WorldStateRelationRecord>,
+}
+
+impl WorldStateRelationRegistry {
+    pub fn all(&self) -> Vec<&WorldStateRelationRecord> {
+        self.relations.values().collect()
+    }
+
+    pub fn by_scope(&self, scope: &str) -> Vec<&WorldStateRelationRecord> {
+        self.relations
+            .values()
+            .filter(|relation| relation.scope == scope)
+            .collect()
+    }
+
+    pub fn replace_scope(&mut self, scope: &str, relations: Vec<WorldStateRelationRecord>) {
+        self.relations.retain(|_, relation| relation.scope != scope);
+        for relation in relations {
+            self.relations
+                .insert(relation.relation_id.clone(), relation);
+        }
+    }
+
+    pub fn insert_existing(&mut self, relation: WorldStateRelationRecord) {
+        self.relations
+            .insert(relation.relation_id.clone(), relation);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -1191,6 +1235,7 @@ pub struct HouseInventory {
     pub approval_requests: usize,
     pub world_state_nodes: usize,
     pub world_state_deltas: usize,
+    pub world_state_relations: usize,
 }
 
 #[derive(Debug, Default)]
@@ -1211,6 +1256,7 @@ pub struct HouseRuntime {
     pub approvals: ApprovalRegistry,
     pub world_state_nodes: WorldStateNodeRegistry,
     pub world_state_deltas: WorldStateDeltaRegistry,
+    pub world_state_relations: WorldStateRelationRegistry,
 }
 
 impl HouseRuntime {
@@ -1262,6 +1308,7 @@ impl HouseRuntime {
             approval_requests: self.approvals.all().len(),
             world_state_nodes: self.world_state_nodes.all().len(),
             world_state_deltas: self.world_state_deltas.all().len(),
+            world_state_relations: self.world_state_relations.all().len(),
         }
     }
 

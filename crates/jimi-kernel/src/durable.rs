@@ -9,7 +9,7 @@ use crate::{
     KernelError, LaneId, LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord,
     MemoryPromotionRecord, PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord,
     SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
-    WorldStateDeltaRecord, WorldStateNodeRecord,
+    WorldStateDeltaRecord, WorldStateNodeRecord, WorldStateRelationRecord,
 };
 
 #[derive(Debug, Error)]
@@ -224,6 +224,16 @@ impl DurableStore {
               scope TEXT NOT NULL,
               change_kind TEXT NOT NULL,
               path TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              observed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS world_state_relations (
+              relation_id TEXT PRIMARY KEY,
+              scope TEXT NOT NULL,
+              from_node_id TEXT NOT NULL,
+              to_node_id TEXT NOT NULL,
+              relation_kind TEXT NOT NULL,
               summary TEXT NOT NULL,
               observed_at TEXT NOT NULL
             );
@@ -611,6 +621,22 @@ impl DurableStore {
                     delta.path,
                     delta.summary,
                     delta.observed_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for relation in runtime.world_state_relations.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO world_state_relations (relation_id, scope, from_node_id, to_node_id, relation_kind, summary, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    relation.relation_id,
+                    relation.scope,
+                    relation.from_node_id,
+                    relation.to_node_id,
+                    relation.relation_kind,
+                    relation.summary,
+                    relation.observed_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -1279,6 +1305,38 @@ impl DurableStore {
                     summary,
                     observed_at: parse_dt(&observed_at)?,
                 });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT relation_id, scope, from_node_id, to_node_id, relation_kind, summary, observed_at FROM world_state_relations ORDER BY observed_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (relation_id, scope, from_node_id, to_node_id, relation_kind, summary, observed_at) =
+                    row?;
+                runtime
+                    .world_state_relations
+                    .insert_existing(WorldStateRelationRecord {
+                        relation_id,
+                        scope,
+                        from_node_id,
+                        to_node_id,
+                        relation_kind,
+                        summary,
+                        observed_at: parse_dt(&observed_at)?,
+                    });
             }
         }
 
