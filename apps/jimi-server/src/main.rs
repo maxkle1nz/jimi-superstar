@@ -101,6 +101,7 @@ struct DispatchExecutionResponse {
 struct ContextPacketResponse {
     session_id: String,
     hot_capsules: Vec<MemoryCapsuleRecord>,
+    relevant_capsules: Vec<MemoryCapsuleRecord>,
     summary_checkpoints: Vec<SummaryCheckpointRecord>,
     active_snapshot: Option<MandalaActiveSnapshot>,
     providers: Vec<String>,
@@ -135,6 +136,7 @@ async fn main() {
         .route("/dispatches/execute-latest-live", post(execute_latest_dispatch_live))
         .route("/memory/capsules", get(list_memory_capsules))
         .route("/memory/summaries", get(list_summary_checkpoints))
+        .route("/memory/query/:session_id", get(query_memory))
         .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
@@ -361,6 +363,14 @@ async fn context_packet(
         .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok())
         .map(|mandala| mandala.active_snapshot.clone());
 
+    let query_seed = active_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.current_goal.clone())
+        .or_else(|| hot_capsules.last().map(|capsule| capsule.content.clone()))
+        .unwrap_or_default();
+
+    let relevant_capsules = runtime.query_memory(&session_id, &query_seed, 5);
+
     let summary_checkpoints = runtime
         .summary_checkpoints
         .by_session(&session_id)
@@ -383,10 +393,22 @@ async fn context_packet(
     Ok(Json(ContextPacketResponse {
         session_id: session_id.0,
         hot_capsules,
+        relevant_capsules,
         summary_checkpoints,
         active_snapshot,
         providers,
     }))
+}
+
+async fn query_memory(
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MemoryCapsuleRecord>>, (StatusCode, String)> {
+    let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let session_id = jimi_kernel::SessionId(session_id);
+    let query = params.get("q").cloned().unwrap_or_default();
+    Ok(Json(runtime.query_memory(&session_id, &query, 8)))
 }
 
 async fn execute_latest_dispatch(
@@ -1329,6 +1351,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <div class="list" id="memory-capsule-list"></div>
+            <div class="list" id="memory-relevance-list"></div>
             <div class="list" id="summary-list"></div>
             <div class="list" id="context-packet-view"></div>
           </div>
@@ -1370,6 +1393,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const providerStatusEl = document.getElementById('provider-status');
       const contextStatusEl = document.getElementById('context-status');
       const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
+      const memoryRelevanceListEl = document.getElementById('memory-relevance-list');
       const summaryListEl = document.getElementById('summary-list');
       const contextPacketViewEl = document.getElementById('context-packet-view');
 
@@ -1570,14 +1594,27 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       function renderContextPacket() {
         if (!state.contextPacket) {
           contextPacketViewEl.innerHTML = '<div class="empty">No context packet loaded yet.</div>';
+          memoryRelevanceListEl.innerHTML = '<div class="empty">No ranked memory candidates yet.</div>';
           return;
         }
         const packet = state.contextPacket;
+        const relevant = packet.relevant_capsules || [];
+        memoryRelevanceListEl.innerHTML = relevant.length
+          ? relevant.map(capsule => `
+            <div class="card">
+              <strong>relevant / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">confidence: ${escapeHtml(capsule.confidence_level)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No ranked memory candidates yet.</div>';
         contextPacketViewEl.innerHTML = `
           <div class="card">
             <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
             <div class="meta">providers: ${escapeHtml((packet.providers || []).join(', ') || 'none')}</div>
             <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
+            <div class="meta">relevant capsules: ${escapeHtml((packet.relevant_capsules || []).length)}</div>
             <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
             <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
             <div class="meta">blockers: ${escapeHtml((packet.active_snapshot?.blockers || []).join(' | ') || 'none')}</div>

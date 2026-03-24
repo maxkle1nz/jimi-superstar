@@ -638,7 +638,37 @@ impl MemoryCapsuleRegistry {
             } else {
                 "archive".into()
             };
+            let band_bonus = match capsule.band.as_str() {
+                "hot" => 0.15,
+                "warm" => 0.08,
+                _ => 0.03,
+            };
+            let role_bonus = if capsule.role == "operator" { 0.06 } else { 0.03 };
+            capsule.relevance_score = (capsule.confidence_level + band_bonus + role_bonus).min(1.0);
         }
+    }
+
+    pub fn query_session(
+        &self,
+        session_id: &SessionId,
+        query: &str,
+        limit: usize,
+    ) -> Vec<MemoryCapsuleRecord> {
+        let lowered_query = query.to_lowercase();
+        let mut capsules: Vec<MemoryCapsuleRecord> = self
+            .capsules
+            .values()
+            .filter(|capsule| capsule.session_id.0 == session_id.0)
+            .cloned()
+            .collect();
+
+        capsules.sort_by(|a, b| {
+            score_capsule_for_query(b, &lowered_query)
+                .partial_cmp(&score_capsule_for_query(a, &lowered_query))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        capsules.truncate(limit);
+        capsules
     }
 }
 
@@ -774,38 +804,54 @@ impl HouseRuntime {
             .filter(|capsule| capsule.band == "hot")
             .cloned()
             .collect();
+        let warm_capsules: Vec<MemoryCapsuleRecord> = self
+            .memory_capsules
+            .by_session(session_id)
+            .into_iter()
+            .filter(|capsule| capsule.band == "warm")
+            .cloned()
+            .collect();
+        let archive_capsules: Vec<MemoryCapsuleRecord> = self
+            .memory_capsules
+            .by_session(session_id)
+            .into_iter()
+            .filter(|capsule| capsule.band == "archive")
+            .cloned()
+            .collect();
 
         if hot_capsules.is_empty() {
             return None;
         }
 
-        let semantic_digest = hot_capsules
-            .iter()
-            .map(|capsule| capsule.content.as_str())
-            .collect::<Vec<_>>()
-            .join(" | ");
-        let decisions_retained = hot_capsules
-            .iter()
-            .filter_map(|capsule| capsule.intent_summary.clone())
-            .collect::<Vec<_>>();
-        let unresolved_items = hot_capsules
-            .iter()
-            .filter(|capsule| capsule.role == "operator")
-            .map(|capsule| capsule.content.clone())
-            .collect::<Vec<_>>();
-
-        let checkpoint = self.summary_checkpoints.create(
-            session_id.clone(),
+        let checkpoint = create_summary_for_band(
+            &mut self.summary_checkpoints,
+            session_id,
             "hot",
-            hot_capsules
-                .iter()
-                .map(|capsule| capsule.memory_capsule_id.clone())
-                .collect(),
-            semantic_digest.clone(),
-            decisions_retained.clone(),
-            unresolved_items.clone(),
+            &hot_capsules,
             0.86,
         );
+        if !warm_capsules.is_empty() {
+            create_summary_for_band(
+                &mut self.summary_checkpoints,
+                session_id,
+                "warm",
+                &warm_capsules,
+                0.78,
+            );
+        }
+        if !archive_capsules.is_empty() {
+            create_summary_for_band(
+                &mut self.summary_checkpoints,
+                session_id,
+                "archive",
+                &archive_capsules,
+                0.68,
+            );
+        }
+
+        let semantic_digest = checkpoint.semantic_digest.clone();
+        let decisions_retained = checkpoint.decisions_retained.clone();
+        let unresolved_items = checkpoint.unresolved_items.clone();
 
         for slot in self.slots.all() {
             if let Some(mandala_id) = &slot.active_mandala_id {
@@ -832,6 +878,74 @@ impl HouseRuntime {
 
         Some(checkpoint)
     }
+
+    pub fn query_memory(
+        &self,
+        session_id: &SessionId,
+        query: &str,
+        limit: usize,
+    ) -> Vec<MemoryCapsuleRecord> {
+        self.memory_capsules.query_session(session_id, query, limit)
+    }
+}
+
+fn create_summary_for_band(
+    registry: &mut SummaryCheckpointRegistry,
+    session_id: &SessionId,
+    source_band: &str,
+    capsules: &[MemoryCapsuleRecord],
+    confidence_level: f32,
+) -> SummaryCheckpointRecord {
+    let semantic_digest = capsules
+        .iter()
+        .map(|capsule| capsule.content.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let decisions_retained = capsules
+        .iter()
+        .filter_map(|capsule| capsule.intent_summary.clone())
+        .collect::<Vec<_>>();
+    let unresolved_items = capsules
+        .iter()
+        .filter(|capsule| capsule.role == "operator")
+        .map(|capsule| capsule.content.clone())
+        .collect::<Vec<_>>();
+
+    registry.create(
+        session_id.clone(),
+        source_band,
+        capsules
+            .iter()
+            .map(|capsule| capsule.memory_capsule_id.clone())
+            .collect(),
+        semantic_digest,
+        decisions_retained,
+        unresolved_items,
+        confidence_level,
+    )
+}
+
+fn score_capsule_for_query(capsule: &MemoryCapsuleRecord, lowered_query: &str) -> f32 {
+    let band_bonus = match capsule.band.as_str() {
+        "hot" => 0.15,
+        "warm" => 0.08,
+        _ => 0.03,
+    };
+    let content_lower = capsule.content.to_lowercase();
+    let intent_lower = capsule
+        .intent_summary
+        .as_ref()
+        .map(|value| value.to_lowercase())
+        .unwrap_or_default();
+    let query_bonus = if lowered_query.is_empty() {
+        0.0
+    } else {
+        let content_match = if content_lower.contains(lowered_query) { 0.25 } else { 0.0 };
+        let intent_match = if intent_lower.contains(lowered_query) { 0.18 } else { 0.0 };
+        content_match + intent_match
+    };
+
+    capsule.relevance_score + (capsule.confidence_level * 0.2) + band_bonus + query_bonus
 }
 
 #[cfg(test)]
