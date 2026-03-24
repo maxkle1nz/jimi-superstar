@@ -20,8 +20,8 @@ use jimi_kernel::{
     FieldVaultArtifact,
     MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
-    MandalaSelf, MandalaStableMemory, SealLevel, SessionRecord, SlotBindingState, SubjectRef,
-    TurnDispatchRecord, TurnRecord,
+    MandalaSelf, MandalaStableMemory, MemoryCapsuleRecord, SealLevel, SessionRecord,
+    SlotBindingState, SubjectRef, TurnDispatchRecord, TurnRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -97,6 +97,14 @@ struct DispatchExecutionResponse {
     output_text: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ContextPacketResponse {
+    session_id: String,
+    hot_capsules: Vec<MemoryCapsuleRecord>,
+    active_snapshot: Option<MandalaActiveSnapshot>,
+    providers: Vec<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("JIMI_DB_PATH")
@@ -124,6 +132,8 @@ async fn main() {
         .route("/dispatches", get(list_dispatches))
         .route("/dispatches/execute-latest", post(execute_latest_dispatch))
         .route("/dispatches/execute-latest-live", post(execute_latest_dispatch_live))
+        .route("/memory/capsules", get(list_memory_capsules))
+        .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
@@ -248,6 +258,19 @@ async fn create_turn(
         "queued",
     );
 
+    runtime.memory_capsules.append(
+        turn.session_id.clone(),
+        turn.lane_id.clone(),
+        Some(turn.turn_id.clone()),
+        "operator",
+        request.intent_summary.clone(),
+        Some(request.intent_summary.clone()),
+        0.95,
+        0.95,
+        "session_open",
+        "hot",
+    );
+
     runtime.events.append(
         ActorRef {
             actor_type: "router".into(),
@@ -294,6 +317,53 @@ async fn list_turns(State(state): State<AppState>) -> Json<Vec<TurnRecord>> {
 async fn list_dispatches(State(state): State<AppState>) -> Json<Vec<TurnDispatchRecord>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.dispatches.all().into_iter().cloned().collect())
+}
+
+async fn list_memory_capsules(State(state): State<AppState>) -> Json<Vec<MemoryCapsuleRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.memory_capsules.all().into_iter().cloned().collect())
+}
+
+async fn context_packet(
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ContextPacketResponse>, (StatusCode, String)> {
+    let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let session_id = jimi_kernel::SessionId(session_id);
+
+    let hot_capsules: Vec<MemoryCapsuleRecord> = runtime
+        .memory_capsules
+        .by_session(&session_id)
+        .into_iter()
+        .rev()
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let active_snapshot = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.as_ref())
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok())
+        .map(|mandala| mandala.active_snapshot.clone());
+
+    let providers = runtime
+        .providers
+        .all()
+        .into_iter()
+        .map(|provider| format!("{}:{}", provider.provider, provider.model))
+        .collect();
+
+    Ok(Json(ContextPacketResponse {
+        session_id: session_id.0,
+        hot_capsules,
+        active_snapshot,
+        providers,
+    }))
 }
 
 async fn execute_latest_dispatch(
@@ -352,6 +422,19 @@ async fn execute_latest_dispatch(
         .sessions
         .update_turn_state(&running_dispatch.turn_id, jimi_kernel::TurnState::Completed)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    runtime.memory_capsules.append(
+        completed_turn.session_id.clone(),
+        completed_turn.lane_id.clone(),
+        Some(completed_turn.turn_id.clone()),
+        "assistant",
+        output_text.clone(),
+        Some(running_dispatch.intent_summary.clone()),
+        0.91,
+        0.88,
+        "session_open",
+        "hot",
+    );
 
     runtime.events.append(
         ActorRef {
@@ -452,8 +535,9 @@ async fn execute_latest_dispatch_live(
         )
     };
 
+    let live_intent_summary = dispatch.intent_summary.clone();
     let output_text = tokio::task::spawn_blocking(move || {
-        run_codex_exec(&house_root, &dispatch.intent_summary)
+        run_codex_exec(&house_root, &live_intent_summary)
     })
     .await
     .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
@@ -468,6 +552,19 @@ async fn execute_latest_dispatch_live(
         .sessions
         .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Completed)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    runtime.memory_capsules.append(
+        completed_turn.session_id.clone(),
+        completed_turn.lane_id.clone(),
+        Some(completed_turn.turn_id.clone()),
+        "assistant",
+        output_text.clone(),
+        Some(dispatch.intent_summary.clone()),
+        0.94,
+        0.9,
+        "session_open",
+        "hot",
+    );
 
     runtime.events.append(
         ActorRef {
@@ -1202,6 +1299,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="list" id="artifact-list"></div>
             <div class="list" id="provider-list"></div>
           </div>
+
+          <div class="panel">
+            <h2>Capsule Memory</h2>
+            <div class="small" id="context-status">awaiting context packet</div>
+            <div class="list" id="memory-capsule-list"></div>
+            <div class="list" id="context-packet-view"></div>
+          </div>
         </div>
 
         <div class="panel">
@@ -1238,11 +1342,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const sealStatusEl = document.getElementById('seal-status');
       const providerButtonEl = document.getElementById('bootstrap-provider');
       const providerStatusEl = document.getElementById('provider-status');
+      const contextStatusEl = document.getElementById('context-status');
+      const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
+      const contextPacketViewEl = document.getElementById('context-packet-view');
 
       const state = {
         sessions: [],
         turns: [],
         dispatches: [],
+        memoryCapsules: [],
+        contextPacket: null,
         events: [],
         mandalas: [],
         capsules: [],
@@ -1413,6 +1522,39 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         `).join('');
       }
 
+      function renderMemoryCapsules() {
+        if (!state.memoryCapsules.length) {
+          memoryCapsuleListEl.innerHTML = '<div class="empty">No memory capsules captured yet.</div>';
+          return;
+        }
+        memoryCapsuleListEl.innerHTML = state.memoryCapsules.slice(-6).reverse().map(capsule => `
+          <div class="card">
+            <strong>${escapeHtml(capsule.role)} / ${escapeHtml(capsule.band)}</strong>
+            <div class="meta">capsule: ${escapeHtml(capsule.memory_capsule_id)}</div>
+            <div class="meta">relevance: ${escapeHtml(capsule.relevance_score)}</div>
+            <div class="meta">confidence: ${escapeHtml(capsule.confidence_level)}</div>
+            <div class="meta">${escapeHtml(capsule.content)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderContextPacket() {
+        if (!state.contextPacket) {
+          contextPacketViewEl.innerHTML = '<div class="empty">No context packet loaded yet.</div>';
+          return;
+        }
+        const packet = state.contextPacket;
+        contextPacketViewEl.innerHTML = `
+          <div class="card">
+            <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
+            <div class="meta">providers: ${escapeHtml((packet.providers || []).join(', ') || 'none')}</div>
+            <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
+            <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
+            <div class="meta">next actions: ${escapeHtml((packet.active_snapshot?.next_actions || []).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
       async function refreshInventory() {
         const res = await fetch('/inventory');
         const data = await res.json();
@@ -1467,6 +1609,27 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderProviders();
       }
 
+      async function refreshMemoryCapsules() {
+        const res = await fetch('/memory/capsules');
+        state.memoryCapsules = await res.json();
+        renderMemoryCapsules();
+      }
+
+      async function refreshContextPacket() {
+        const session = state.sessions[0];
+        if (!session) {
+          state.contextPacket = null;
+          renderContextPacket();
+          contextStatusEl.textContent = 'create a session to assemble context';
+          return;
+        }
+        const sessionId = session.session_id?.[0] || session.session_id;
+        const res = await fetch(`/context-packet/${sessionId}`);
+        state.contextPacket = await res.json();
+        renderContextPacket();
+        contextStatusEl.textContent = `context ready for ${sessionId}`;
+      }
+
       async function refreshEvents() {
         const res = await fetch('/events');
         state.events = await res.json();
@@ -1485,7 +1648,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await refreshInventory();
+        await Promise.all([refreshInventory(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -1508,7 +1671,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         turnStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.intent_mode}`;
-        await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
+        await Promise.all([
+          refreshInventory(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshMemoryCapsules(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
       }
 
       async function executeLatestDispatch() {
@@ -1519,7 +1689,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         executeStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.state}`;
-        await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
+        await Promise.all([
+          refreshInventory(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshMemoryCapsules(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
       }
 
       async function executeLatestDispatchLive() {
@@ -1530,7 +1707,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         executeLiveStatusEl.textContent = `${result.dispatch.provider_lane_id} -> live completed`;
-        await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
+        await Promise.all([
+          refreshInventory(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshMemoryCapsules(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
       }
 
       async function bootstrapCoreCapsule() {
@@ -1589,13 +1773,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             if (event.event_type === 'session_created') {
               refreshSessions().catch(console.error);
               refreshInventory().catch(console.error);
+              refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
               refreshTurns().catch(console.error);
+              refreshMemoryCapsules().catch(console.error);
+              refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
               refreshInventory().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
+              refreshMemoryCapsules().catch(console.error);
+              refreshContextPacket().catch(console.error);
             } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
               refreshInventory().catch(console.error);
               refreshMandalas().catch(console.error);
@@ -1712,6 +1901,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshSlots(),
         refreshArtifacts(),
         refreshProviders(),
+        refreshMemoryCapsules(),
+        refreshContextPacket(),
         refreshEvents()
       ])
         .then(connectEvents)

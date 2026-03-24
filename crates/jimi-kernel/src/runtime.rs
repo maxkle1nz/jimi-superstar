@@ -87,6 +87,22 @@ pub struct TurnDispatchRecord {
     pub dispatched_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryCapsuleRecord {
+    pub memory_capsule_id: String,
+    pub session_id: SessionId,
+    pub lane_id: LaneId,
+    pub turn_id: Option<TurnId>,
+    pub role: String,
+    pub content: String,
+    pub intent_summary: Option<String>,
+    pub relevance_score: f32,
+    pub confidence_level: f32,
+    pub privacy_class: String,
+    pub band: String,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,
@@ -532,6 +548,61 @@ impl TurnDispatchRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct MemoryCapsuleRegistry {
+    capsules: BTreeMap<String, MemoryCapsuleRecord>,
+}
+
+impl MemoryCapsuleRegistry {
+    pub fn append(
+        &mut self,
+        session_id: SessionId,
+        lane_id: LaneId,
+        turn_id: Option<TurnId>,
+        role: impl Into<String>,
+        content: impl Into<String>,
+        intent_summary: Option<String>,
+        relevance_score: f32,
+        confidence_level: f32,
+        privacy_class: impl Into<String>,
+        band: impl Into<String>,
+    ) -> MemoryCapsuleRecord {
+        let capsule = MemoryCapsuleRecord {
+            memory_capsule_id: format!("memcap_{}", Uuid::now_v7()),
+            session_id,
+            lane_id,
+            turn_id,
+            role: role.into(),
+            content: content.into(),
+            intent_summary,
+            relevance_score,
+            confidence_level,
+            privacy_class: privacy_class.into(),
+            band: band.into(),
+            created_at: Utc::now(),
+        };
+        self.capsules
+            .insert(capsule.memory_capsule_id.clone(), capsule.clone());
+        capsule
+    }
+
+    pub fn all(&self) -> Vec<&MemoryCapsuleRecord> {
+        self.capsules.values().collect()
+    }
+
+    pub fn by_session(&self, session_id: &SessionId) -> Vec<&MemoryCapsuleRecord> {
+        self.capsules
+            .values()
+            .filter(|capsule| capsule.session_id.0 == session_id.0)
+            .collect()
+    }
+
+    pub fn insert_existing(&mut self, capsule: MemoryCapsuleRecord) {
+        self.capsules
+            .insert(capsule.memory_capsule_id.clone(), capsule);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -544,6 +615,7 @@ pub struct HouseInventory {
     pub fieldvault_artifacts: usize,
     pub provider_lanes: usize,
     pub turn_dispatches: usize,
+    pub memory_capsules: usize,
 }
 
 #[derive(Debug, Default)]
@@ -556,6 +628,7 @@ pub struct HouseRuntime {
     pub fieldvault: FieldVaultRuntime,
     pub providers: ProviderLaneRegistry,
     pub dispatches: TurnDispatchRegistry,
+    pub memory_capsules: MemoryCapsuleRegistry,
 }
 
 impl HouseRuntime {
@@ -594,6 +667,7 @@ impl HouseRuntime {
             fieldvault_artifacts: self.fieldvault.all().len(),
             provider_lanes: self.providers.all().len(),
             turn_dispatches: self.dispatches.all().len(),
+            memory_capsules: self.memory_capsules.all().len(),
         }
     }
 }

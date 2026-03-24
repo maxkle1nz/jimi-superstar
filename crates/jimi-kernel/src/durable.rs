@@ -6,8 +6,8 @@ use thiserror::Error;
 
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
-    LaneRecord, MandalaManifest, PersonalitySlot, ProviderLaneRecord, SessionId, SessionRecord,
-    TurnDispatchRecord, TurnId, TurnRecord,
+    LaneRecord, MandalaManifest, MemoryCapsuleRecord, PersonalitySlot, ProviderLaneRecord,
+    SessionId, SessionRecord, TurnDispatchRecord, TurnId, TurnRecord,
 };
 
 #[derive(Debug, Error)]
@@ -132,6 +132,21 @@ impl DurableStore {
               intent_summary TEXT NOT NULL,
               status TEXT NOT NULL,
               dispatched_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_capsules (
+              memory_capsule_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              lane_id TEXT NOT NULL,
+              turn_id TEXT,
+              role TEXT NOT NULL,
+              content TEXT NOT NULL,
+              intent_summary TEXT,
+              relevance_score REAL NOT NULL,
+              confidence_level REAL NOT NULL,
+              privacy_class TEXT NOT NULL,
+              band TEXT NOT NULL,
+              created_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -288,6 +303,27 @@ impl DurableStore {
                     dispatch.intent_summary,
                     dispatch.status,
                     dispatch.dispatched_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for capsule in runtime.memory_capsules.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO memory_capsules (memory_capsule_id, session_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    capsule.memory_capsule_id,
+                    capsule.session_id.0,
+                    capsule.lane_id.0,
+                    capsule.turn_id.as_ref().map(|id| id.0.clone()),
+                    capsule.role,
+                    capsule.content,
+                    capsule.intent_summary,
+                    capsule.relevance_score,
+                    capsule.confidence_level,
+                    capsule.privacy_class,
+                    capsule.band,
+                    capsule.created_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -591,6 +627,58 @@ impl DurableStore {
                     intent_summary,
                     status,
                     dispatched_at: parse_dt(&dispatched_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT memory_capsule_id, session_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at FROM memory_capsules ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, f32>(7)?,
+                    row.get::<_, f32>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    memory_capsule_id,
+                    session_id,
+                    lane_id,
+                    turn_id,
+                    role,
+                    content,
+                    intent_summary,
+                    relevance_score,
+                    confidence_level,
+                    privacy_class,
+                    band,
+                    created_at,
+                ) = row?;
+                runtime.memory_capsules.insert_existing(MemoryCapsuleRecord {
+                    memory_capsule_id,
+                    session_id: SessionId(session_id),
+                    lane_id: LaneId(lane_id),
+                    turn_id: turn_id.map(TurnId),
+                    role,
+                    content,
+                    intent_summary,
+                    relevance_score,
+                    confidence_level,
+                    privacy_class,
+                    band,
+                    created_at: parse_dt(&created_at)?,
                 });
             }
         }
