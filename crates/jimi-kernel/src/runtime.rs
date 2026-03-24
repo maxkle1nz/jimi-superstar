@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -26,7 +27,7 @@ pub enum KernelError {
     SlotNotFound(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub session_id: SessionId,
     pub title: String,
@@ -36,7 +37,7 @@ pub struct SessionRecord {
     pub updated_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneRecord {
     pub lane_id: LaneId,
     pub session_id: SessionId,
@@ -45,7 +46,7 @@ pub struct LaneRecord {
     pub created_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnRecord {
     pub turn_id: TurnId,
     pub session_id: SessionId,
@@ -55,7 +56,7 @@ pub struct TurnRecord {
     pub created_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapsuleRecord {
     pub capsule_id: String,
     pub mandala_id: String,
@@ -238,6 +239,10 @@ impl MandalaRegistry {
     pub fn all(&self) -> Vec<&MandalaManifest> {
         self.mandalas.values().collect()
     }
+
+    pub fn ids(&self) -> Vec<&str> {
+        self.mandalas.keys().map(String::as_str).collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -392,6 +397,18 @@ impl FieldVaultRuntime {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HouseInventory {
+    pub sessions: usize,
+    pub lanes: usize,
+    pub turns: usize,
+    pub events: usize,
+    pub mandalas: usize,
+    pub capsules: usize,
+    pub slots: usize,
+    pub fieldvault_artifacts: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct HouseRuntime {
     pub events: EventStore,
@@ -424,6 +441,19 @@ impl HouseRuntime {
             }),
         );
         session
+    }
+
+    pub fn inventory(&self) -> HouseInventory {
+        HouseInventory {
+            sessions: self.sessions.sessions().len(),
+            lanes: self.sessions.lanes().len(),
+            turns: self.sessions.turns().len(),
+            events: self.events.all().len(),
+            mandalas: self.mandalas.all().len(),
+            capsules: self.capsules.all().len(),
+            slots: self.slots.all().len(),
+            fieldvault_artifacts: self.fieldvault.all().len(),
+        }
     }
 }
 

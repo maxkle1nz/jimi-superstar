@@ -1,0 +1,13 @@
+[package]
+name = "jimi-server"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal HTTP surface for JIMI SUPERSTAR"
+license = "MIT"
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jimi-kernel = { path = "../../crates/jimi-kernel" }

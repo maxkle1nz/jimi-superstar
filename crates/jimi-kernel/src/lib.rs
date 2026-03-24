@@ -19,8 +19,8 @@ pub use mandala::{
     MandalaSelf, MandalaSkillPack, MandalaStableMemory, SacredShard,
 };
 pub use runtime::{
-    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseRuntime, KernelError,
-    LaneRecord, MandalaRegistry, SessionManager, SessionRecord, SlotRegistry, TurnRecord,
+    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime,
+    KernelError, LaneRecord, MandalaRegistry, SessionManager, SessionRecord, SlotRegistry, TurnRecord,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};
