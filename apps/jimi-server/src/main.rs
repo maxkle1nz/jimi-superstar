@@ -4759,6 +4759,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">status: ${escapeHtml(provider.status)}</div>
             <div class="meta">ready: ${escapeHtml(readinessMap.get(provider.provider)?.ready ? 'yes' : 'no')}</div>
             <div class="meta">auth source: ${escapeHtml(readinessMap.get(provider.provider)?.source || 'unknown')}</div>
+            <div class="meta">readiness details: ${escapeHtml(readinessMap.get(provider.provider)?.details || 'none')}</div>
+            <div class="meta">fallback rail: ${escapeHtml(`${provider.fallback_group || 'ungrouped'} / p${provider.priority}`)}</div>
             <div class="actions"><button onclick="editProviderLane('${escapeHtml(provider.provider_lane_id)}', '${escapeHtml(provider.routing_mode)}', '${escapeHtml(provider.fallback_group || '')}', '${escapeHtml(provider.priority)}')">Edit lane</button></div>
           </div>
         `).join('');
