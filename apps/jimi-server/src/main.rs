@@ -337,6 +337,15 @@ struct CapsuleInstallRequestResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CapsuleActivationResponse {
+    package_id: String,
+    capsule_id: String,
+    mandala_id: String,
+    slot_id: String,
+    slot_state: SlotBindingState,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryPolicyUpdateResponse {
     mandala_id: String,
     memory_policy: MandalaMemoryPolicy,
@@ -487,6 +496,10 @@ async fn main() {
         .route(
             "/capsule-packages/{package_id}/install-request",
             post(request_capsule_install),
+        )
+        .route(
+            "/capsule-packages/{package_id}/activate",
+            post(activate_capsule_package),
         )
         .route(
             "/capsule-packages/{package_id}/export",
@@ -2630,6 +2643,104 @@ async fn export_capsule_package(
         Json(CapsuleExportResponse {
             package,
             export_record,
+        }),
+    ))
+}
+
+async fn activate_capsule_package(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleActivationResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    let allowed = matches!(
+        package.install_status.as_str(),
+        "approved_for_install" | "install_ready" | "installed"
+    );
+    if !allowed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "package {} is not ready for activation (status: {})",
+                package.package_id, package.install_status
+            ),
+        ));
+    }
+
+    let slot_id = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find(|slot| slot.active_mandala_id.is_none())
+        .map(|slot| slot.slot_id.clone())
+        .unwrap_or_else(|| "slot.jimi.superstar.primary".to_string());
+
+    if runtime.slots.get(&slot_id).is_err() {
+        runtime
+            .slots
+            .define_slot(slot_id.clone(), "Primary Personality Slot");
+    }
+
+    runtime
+        .slots
+        .bind_capsule(&slot_id, package.capsule_id.clone(), package.mandala_id.clone(), false)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    runtime
+        .slots
+        .activate(&slot_id)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let updated_package = runtime
+        .capsule_packages
+        .update_install_status(&package_id, "installed")
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+    let slot = runtime
+        .slots
+        .get(&slot_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.marketplace".into(),
+        },
+        SubjectRef {
+            subject_type: "slot".into(),
+            subject_id: slot_id.clone(),
+        },
+        EventType::SlotActivated,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": updated_package.package_id,
+            "capsule_id": updated_package.capsule_id,
+            "mandala_id": updated_package.mandala_id,
+            "slot_id": slot_id,
+            "slot_state": slot.state,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(CapsuleActivationResponse {
+            package_id: updated_package.package_id,
+            capsule_id: updated_package.capsule_id,
+            mandala_id: updated_package.mandala_id,
+            slot_id: slot.slot_id,
+            slot_state: slot.state,
         }),
     ))
 }
@@ -5251,6 +5362,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <div class="actions">
                 <button onclick="previewCapsulePackage('${escapeHtml(entry.package_id)}')">Preview</button>
                 <button onclick="requestCapsuleInstall('${escapeHtml(entry.package_id)}')">Install</button>
+                <button onclick="activateCapsulePackage('${escapeHtml(entry.package_id)}')">Activate</button>
                 <button onclick="exportCapsulePackage('${escapeHtml(entry.package_id)}')">Export</button>
               </div>
             </div>
@@ -6088,6 +6200,29 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMacroStatus(),
           refreshEvents()
         ]);
+      }
+
+      async function activateCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for activation');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/activate`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to activate capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshSlots(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
       }
 
       async function refreshSlots() {
