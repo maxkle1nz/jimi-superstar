@@ -65,6 +65,8 @@ struct AutonomyStatus {
     running: bool,
     cycles: u64,
     completed_dispatches: u64,
+    transition_count: u64,
+    last_transition: Option<String>,
     last_dispatch_id: Option<String>,
     last_intent_summary: Option<String>,
     last_selection_reason: Option<String>,
@@ -78,6 +80,8 @@ impl Default for AutonomyStatus {
             running: false,
             cycles: 0,
             completed_dispatches: 0,
+            transition_count: 0,
+            last_transition: None,
             last_dispatch_id: None,
             last_intent_summary: None,
             last_selection_reason: None,
@@ -199,6 +203,8 @@ struct AutonomyStatusResponse {
     running: bool,
     cycles: u64,
     completed_dispatches: u64,
+    transition_count: u64,
+    last_transition: Option<String>,
     mission_phase: String,
     current_goal: Option<String>,
     next_actions: Vec<String>,
@@ -1640,6 +1646,10 @@ async fn run_latest_dispatch_live_once(
             autonomy_status.last_dispatch_id = Some(running_dispatch.dispatch_id.clone());
             autonomy_status.last_intent_summary = Some(running_dispatch.intent_summary.clone());
             autonomy_status.last_selection_reason = Some(selection_reason.clone());
+            mark_autonomy_transition(
+                &mut autonomy_status,
+                format!("selected:{}:{}", running_dispatch.dispatch_id, selection_reason),
+            );
         }
 
         if let Some(reason) = approval_reason_for_dispatch(
@@ -1701,6 +1711,13 @@ async fn run_latest_dispatch_live_once(
 
                 if let Some(event) = new_event {
                     let _ = state.events_tx.send(event);
+                }
+
+                if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+                    mark_autonomy_transition(
+                        &mut autonomy_status,
+                        format!("awaiting_approval:{}", running_dispatch.dispatch_id),
+                    );
                 }
 
                 return Err((
@@ -1807,6 +1824,16 @@ async fn run_latest_dispatch_live_once(
                     if let Some(event) = new_event {
                         let _ = state.events_tx.send(event);
                     }
+                    if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+                        mark_autonomy_transition(
+                            &mut autonomy_status,
+                            format!(
+                                "fallback:{}->{}",
+                                fallback_from.clone().unwrap_or_else(|| dispatch.provider_lane_id.clone()),
+                                candidate_lane.provider_lane_id
+                            ),
+                        );
+                    }
                 }
                 executing_lane = candidate_lane;
                 output_text = Some(output);
@@ -1856,6 +1883,16 @@ async fn run_latest_dispatch_live_once(
 
                 fallback_from = Some(candidate_lane.provider_lane_id.clone());
                 last_error = Some(error.clone());
+                if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+                    mark_autonomy_transition(
+                        &mut autonomy_status,
+                        format!(
+                            "degraded:{}:{}",
+                            candidate_lane.provider_lane_id,
+                            error.class()
+                        ),
+                    );
+                }
                 if !error.should_fallback() {
                     break;
                 }
@@ -1876,6 +1913,12 @@ async fn run_latest_dispatch_live_once(
                 .map_err(|update_error| (StatusCode::BAD_REQUEST, update_error.to_string()))?;
             persist_runtime(&state, &runtime)?;
             drop(runtime);
+            if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+                mark_autonomy_transition(
+                    &mut autonomy_status,
+                    format!("failed:{}", dispatch.dispatch_id),
+                );
+            }
             return Err((
                 StatusCode::BAD_GATEWAY,
                 last_error
@@ -1950,6 +1993,12 @@ async fn run_latest_dispatch_live_once(
 
     if let Some(event) = new_event {
         let _ = state.events_tx.send(event);
+    }
+    if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+        mark_autonomy_transition(
+            &mut autonomy_status,
+            format!("completed:{}", completed_dispatch.dispatch_id),
+        );
     }
     enqueue_transcript_distillation(&state, &completed_turn.session_id);
 
@@ -2179,6 +2228,11 @@ fn current_mission_state(runtime: &HouseRuntime) -> (String, Option<String>, Vec
     )
 }
 
+fn mark_autonomy_transition(status: &mut AutonomyStatus, transition: impl Into<String>) {
+    status.transition_count += 1;
+    status.last_transition = Some(transition.into());
+}
+
 async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusResponse> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     let (
@@ -2200,6 +2254,8 @@ async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusRe
         running: status.running,
         cycles: status.cycles,
         completed_dispatches: status.completed_dispatches,
+        transition_count: status.transition_count,
+        last_transition: status.last_transition,
         mission_phase,
         current_goal,
         next_actions,
@@ -2229,11 +2285,21 @@ async fn set_autonomy(
     drop(runtime);
     let mut status = state.autonomy_status.lock().map_err(internal_lock_error)?;
     status.enabled = request.enabled;
+    mark_autonomy_transition(
+        &mut status,
+        if request.enabled {
+            "autonomy_enabled"
+        } else {
+            "autonomy_paused"
+        },
+    );
     Ok(Json(AutonomyStatusResponse {
         enabled: status.enabled,
         running: status.running,
         cycles: status.cycles,
         completed_dispatches: status.completed_dispatches,
+        transition_count: status.transition_count,
+        last_transition: status.last_transition.clone(),
         mission_phase,
         current_goal,
         next_actions,
@@ -2311,6 +2377,12 @@ async fn grant_approval(
     if let Some(event) = new_event {
         let _ = state.events_tx.send(event);
     }
+    if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+        mark_autonomy_transition(
+            &mut autonomy_status,
+            format!("approval_granted:{}", approval.dispatch_id),
+        );
+    }
 
     Ok((StatusCode::OK, Json(ApprovalActionResponse { approval })))
 }
@@ -2359,6 +2431,12 @@ async fn deny_approval(
 
     if let Some(event) = new_event {
         let _ = state.events_tx.send(event);
+    }
+    if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+        mark_autonomy_transition(
+            &mut autonomy_status,
+            format!("approval_denied:{}", approval.dispatch_id),
+        );
     }
 
     Ok((StatusCode::OK, Json(ApprovalActionResponse { approval })))
@@ -3148,8 +3226,20 @@ fn spawn_autonomy_loop(state: AppState) {
                     Ok(_) => {
                         status.completed_dispatches += 1;
                         status.last_error = None;
+                        if status.last_transition.is_none() {
+                            mark_autonomy_transition(&mut status, "cycle_completed");
+                        }
                     }
                     Err((code, message)) => {
+                        if code == StatusCode::CONFLICT
+                            && message.contains("approval required before live execution")
+                        {
+                            mark_autonomy_transition(&mut status, "cycle_waiting_for_approval");
+                        } else if code == StatusCode::BAD_REQUEST
+                            && message.contains("no queued dispatches available")
+                        {
+                            mark_autonomy_transition(&mut status, "cycle_idle");
+                        }
                         if code != StatusCode::BAD_REQUEST
                             || !message.contains("no queued dispatches available")
                         {
@@ -4241,6 +4331,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">running: ${escapeHtml(autonomy.running ? 'yes' : 'no')}</div>
             <div class="meta">cycles: ${escapeHtml(autonomy.cycles)}</div>
             <div class="meta">completed dispatches: ${escapeHtml(autonomy.completed_dispatches)}</div>
+            <div class="meta">transition count: ${escapeHtml(autonomy.transition_count ?? 0)}</div>
+            <div class="meta">last transition: ${escapeHtml(autonomy.last_transition || 'none')}</div>
             <div class="meta">mission phase: ${escapeHtml(autonomy.mission_phase || 'steady')}</div>
             <div class="meta">current goal: ${escapeHtml(autonomy.current_goal || 'none')}</div>
             <div class="meta">next actions: ${escapeHtml((autonomy.next_actions || []).join(' | ') || 'none')}</div>
