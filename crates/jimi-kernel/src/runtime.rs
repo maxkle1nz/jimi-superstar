@@ -116,6 +116,27 @@ pub struct SummaryCheckpointRecord {
     pub generated_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryBridgeRecord {
+    pub memory_bridge_id: String,
+    pub session_id: SessionId,
+    pub from_capsule_id: String,
+    pub to_capsule_id: String,
+    pub bridge_kind: String,
+    pub strength: f32,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResynthesisTriggerRecord {
+    pub resynthesis_trigger_id: String,
+    pub session_id: SessionId,
+    pub trigger_kind: String,
+    pub summary: String,
+    pub confidence_level: f32,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,
@@ -723,6 +744,93 @@ impl SummaryCheckpointRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct MemoryBridgeRegistry {
+    bridges: BTreeMap<String, MemoryBridgeRecord>,
+}
+
+impl MemoryBridgeRegistry {
+    pub fn create(
+        &mut self,
+        session_id: SessionId,
+        from_capsule_id: impl Into<String>,
+        to_capsule_id: impl Into<String>,
+        bridge_kind: impl Into<String>,
+        strength: f32,
+    ) -> MemoryBridgeRecord {
+        let bridge = MemoryBridgeRecord {
+            memory_bridge_id: format!("bridge_{}", Uuid::now_v7()),
+            session_id,
+            from_capsule_id: from_capsule_id.into(),
+            to_capsule_id: to_capsule_id.into(),
+            bridge_kind: bridge_kind.into(),
+            strength,
+            created_at: Utc::now(),
+        };
+        self.bridges
+            .insert(bridge.memory_bridge_id.clone(), bridge.clone());
+        bridge
+    }
+
+    pub fn all(&self) -> Vec<&MemoryBridgeRecord> {
+        self.bridges.values().collect()
+    }
+
+    pub fn by_session(&self, session_id: &SessionId) -> Vec<&MemoryBridgeRecord> {
+        self.bridges
+            .values()
+            .filter(|bridge| bridge.session_id.0 == session_id.0)
+            .collect()
+    }
+
+    pub fn insert_existing(&mut self, bridge: MemoryBridgeRecord) {
+        self.bridges.insert(bridge.memory_bridge_id.clone(), bridge);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ResynthesisTriggerRegistry {
+    triggers: BTreeMap<String, ResynthesisTriggerRecord>,
+}
+
+impl ResynthesisTriggerRegistry {
+    pub fn create(
+        &mut self,
+        session_id: SessionId,
+        trigger_kind: impl Into<String>,
+        summary: impl Into<String>,
+        confidence_level: f32,
+    ) -> ResynthesisTriggerRecord {
+        let trigger = ResynthesisTriggerRecord {
+            resynthesis_trigger_id: format!("resynth_{}", Uuid::now_v7()),
+            session_id,
+            trigger_kind: trigger_kind.into(),
+            summary: summary.into(),
+            confidence_level,
+            created_at: Utc::now(),
+        };
+        self.triggers
+            .insert(trigger.resynthesis_trigger_id.clone(), trigger.clone());
+        trigger
+    }
+
+    pub fn all(&self) -> Vec<&ResynthesisTriggerRecord> {
+        self.triggers.values().collect()
+    }
+
+    pub fn by_session(&self, session_id: &SessionId) -> Vec<&ResynthesisTriggerRecord> {
+        self.triggers
+            .values()
+            .filter(|trigger| trigger.session_id.0 == session_id.0)
+            .collect()
+    }
+
+    pub fn insert_existing(&mut self, trigger: ResynthesisTriggerRecord) {
+        self.triggers
+            .insert(trigger.resynthesis_trigger_id.clone(), trigger);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -737,6 +845,8 @@ pub struct HouseInventory {
     pub turn_dispatches: usize,
     pub memory_capsules: usize,
     pub summary_checkpoints: usize,
+    pub memory_bridges: usize,
+    pub resynthesis_triggers: usize,
 }
 
 #[derive(Debug, Default)]
@@ -751,6 +861,8 @@ pub struct HouseRuntime {
     pub dispatches: TurnDispatchRegistry,
     pub memory_capsules: MemoryCapsuleRegistry,
     pub summary_checkpoints: SummaryCheckpointRegistry,
+    pub memory_bridges: MemoryBridgeRegistry,
+    pub resynthesis_triggers: ResynthesisTriggerRegistry,
 }
 
 impl HouseRuntime {
@@ -791,6 +903,8 @@ impl HouseRuntime {
             turn_dispatches: self.dispatches.all().len(),
             memory_capsules: self.memory_capsules.all().len(),
             summary_checkpoints: self.summary_checkpoints.all().len(),
+            memory_bridges: self.memory_bridges.all().len(),
+            resynthesis_triggers: self.resynthesis_triggers.all().len(),
         }
     }
 
@@ -873,6 +987,43 @@ impl HouseRuntime {
                         .map(|capsule| capsule.content.clone())
                         .collect();
                 }
+            }
+        }
+
+        let hot_terms = hot_capsules
+            .iter()
+            .flat_map(|capsule| capsule.content.to_lowercase().split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+
+        for capsule in warm_capsules.iter().chain(archive_capsules.iter()) {
+            let content_lower = capsule.content.to_lowercase();
+            if hot_terms.iter().any(|term| term.len() > 4 && content_lower.contains(term)) {
+                let _ = self.memory_bridges.create(
+                    session_id.clone(),
+                    hot_capsules
+                        .last()
+                        .map(|value| value.memory_capsule_id.clone())
+                        .unwrap_or_default(),
+                    capsule.memory_capsule_id.clone(),
+                    "topic_recurrence",
+                    0.72,
+                );
+            }
+        }
+
+        if !warm_capsules.is_empty() || !archive_capsules.is_empty() {
+            let bridge_count = self.memory_bridges.by_session(session_id).len();
+            if bridge_count > 0 || unresolved_items.len() > 1 {
+                let _ = self.resynthesis_triggers.create(
+                    session_id.clone(),
+                    "context_shift",
+                    format!(
+                        "Re-synthesize session memory due to {} bridges and {} unresolved items",
+                        bridge_count,
+                        unresolved_items.len()
+                    ),
+                    0.81,
+                );
             }
         }
 

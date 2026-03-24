@@ -6,8 +6,9 @@ use thiserror::Error;
 
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
-    LaneRecord, MandalaManifest, MemoryCapsuleRecord, PersonalitySlot, ProviderLaneRecord,
-    SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
+    LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord, PersonalitySlot,
+    ProviderLaneRecord, ResynthesisTriggerRecord, SessionId, SessionRecord,
+    SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
 };
 
 #[derive(Debug, Error)]
@@ -159,6 +160,25 @@ impl DurableStore {
               unresolved_items_json TEXT NOT NULL,
               confidence_level REAL NOT NULL,
               generated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_bridges (
+              memory_bridge_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              from_capsule_id TEXT NOT NULL,
+              to_capsule_id TEXT NOT NULL,
+              bridge_kind TEXT NOT NULL,
+              strength REAL NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS resynthesis_triggers (
+              resynthesis_trigger_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              trigger_kind TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              confidence_level REAL NOT NULL,
+              created_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -354,6 +374,37 @@ impl DurableStore {
                     serde_json::to_string(&checkpoint.unresolved_items)?,
                     checkpoint.confidence_level,
                     checkpoint.generated_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for bridge in runtime.memory_bridges.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO memory_bridges (memory_bridge_id, session_id, from_capsule_id, to_capsule_id, bridge_kind, strength, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    bridge.memory_bridge_id,
+                    bridge.session_id.0,
+                    bridge.from_capsule_id,
+                    bridge.to_capsule_id,
+                    bridge.bridge_kind,
+                    bridge.strength,
+                    bridge.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for trigger in runtime.resynthesis_triggers.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO resynthesis_triggers (resynthesis_trigger_id, session_id, trigger_kind, summary, confidence_level, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    trigger.resynthesis_trigger_id,
+                    trigger.session_id.0,
+                    trigger.trigger_kind,
+                    trigger.summary,
+                    trigger.confidence_level,
+                    trigger.created_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -752,6 +803,62 @@ impl DurableStore {
                     unresolved_items: from_json_string(&unresolved_items_json)?,
                     confidence_level,
                     generated_at: parse_dt(&generated_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT memory_bridge_id, session_id, from_capsule_id, to_capsule_id, bridge_kind, strength, created_at FROM memory_bridges ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f32>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (memory_bridge_id, session_id, from_capsule_id, to_capsule_id, bridge_kind, strength, created_at) = row?;
+                runtime.memory_bridges.insert_existing(MemoryBridgeRecord {
+                    memory_bridge_id,
+                    session_id: SessionId(session_id),
+                    from_capsule_id,
+                    to_capsule_id,
+                    bridge_kind,
+                    strength,
+                    created_at: parse_dt(&created_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT resynthesis_trigger_id, session_id, trigger_kind, summary, confidence_level, created_at FROM resynthesis_triggers ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, f32>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            for row in rows {
+                let (resynthesis_trigger_id, session_id, trigger_kind, summary, confidence_level, created_at) = row?;
+                runtime.resynthesis_triggers.insert_existing(ResynthesisTriggerRecord {
+                    resynthesis_trigger_id,
+                    session_id: SessionId(session_id),
+                    trigger_kind,
+                    summary,
+                    confidence_level,
+                    created_at: parse_dt(&created_at)?,
                 });
             }
         }

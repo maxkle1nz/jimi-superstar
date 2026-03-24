@@ -17,11 +17,12 @@ use axum::{
 };
 use jimi_kernel::{
     ActorRef, DurableStore, EventEnvelope, EventType, HouseInventory, HouseRuntime,
-    FieldVaultArtifact,
+    FieldVaultArtifact, MemoryBridgeRecord,
     MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaStableMemory, MemoryCapsuleRecord, SealLevel, SessionRecord,
     SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
+    ResynthesisTriggerRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -103,6 +104,8 @@ struct ContextPacketResponse {
     hot_capsules: Vec<MemoryCapsuleRecord>,
     relevant_capsules: Vec<MemoryCapsuleRecord>,
     summary_checkpoints: Vec<SummaryCheckpointRecord>,
+    memory_bridges: Vec<MemoryBridgeRecord>,
+    resynthesis_triggers: Vec<ResynthesisTriggerRecord>,
     active_snapshot: Option<MandalaActiveSnapshot>,
     providers: Vec<String>,
 }
@@ -136,6 +139,8 @@ async fn main() {
         .route("/dispatches/execute-latest-live", post(execute_latest_dispatch_live))
         .route("/memory/capsules", get(list_memory_capsules))
         .route("/memory/summaries", get(list_summary_checkpoints))
+        .route("/memory/bridges", get(list_memory_bridges))
+        .route("/memory/resynthesis-triggers", get(list_resynthesis_triggers))
         .route("/memory/query/:session_id", get(query_memory))
         .route("/context-packet/:session_id", get(context_packet))
         .route("/mandalas", get(list_mandalas))
@@ -336,6 +341,20 @@ async fn list_summary_checkpoints(
     Json(runtime.summary_checkpoints.all().into_iter().cloned().collect())
 }
 
+async fn list_memory_bridges(
+    State(state): State<AppState>,
+) -> Json<Vec<MemoryBridgeRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.memory_bridges.all().into_iter().cloned().collect())
+}
+
+async fn list_resynthesis_triggers(
+    State(state): State<AppState>,
+) -> Json<Vec<ResynthesisTriggerRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.resynthesis_triggers.all().into_iter().cloned().collect())
+}
+
 async fn context_packet(
     axum::extract::Path(session_id): axum::extract::Path<String>,
     State(state): State<AppState>,
@@ -383,6 +402,30 @@ async fn context_packet(
         .rev()
         .collect();
 
+    let memory_bridges = runtime
+        .memory_bridges
+        .by_session(&session_id)
+        .into_iter()
+        .rev()
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let resynthesis_triggers = runtime
+        .resynthesis_triggers
+        .by_session(&session_id)
+        .into_iter()
+        .rev()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
     let providers = runtime
         .providers
         .all()
@@ -395,6 +438,8 @@ async fn context_packet(
         hot_capsules,
         relevant_capsules,
         summary_checkpoints,
+        memory_bridges,
+        resynthesis_triggers,
         active_snapshot,
         providers,
     }))
@@ -1353,6 +1398,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="list" id="memory-capsule-list"></div>
             <div class="list" id="memory-relevance-list"></div>
             <div class="list" id="summary-list"></div>
+            <div class="list" id="bridge-list"></div>
+            <div class="list" id="trigger-list"></div>
             <div class="list" id="context-packet-view"></div>
           </div>
         </div>
@@ -1395,6 +1442,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
       const memoryRelevanceListEl = document.getElementById('memory-relevance-list');
       const summaryListEl = document.getElementById('summary-list');
+      const bridgeListEl = document.getElementById('bridge-list');
+      const triggerListEl = document.getElementById('trigger-list');
       const contextPacketViewEl = document.getElementById('context-packet-view');
 
       const state = {
@@ -1403,6 +1452,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         dispatches: [],
         memoryCapsules: [],
         summaries: [],
+        bridges: [],
+        triggers: [],
         contextPacket: null,
         events: [],
         mandalas: [],
@@ -1424,6 +1475,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['providers', inventory.provider_lanes ?? 0],
           ['dispatches', inventory.turn_dispatches ?? 0],
           ['summaries', inventory.summary_checkpoints ?? 0],
+          ['bridges', inventory.memory_bridges ?? 0],
+          ['triggers', inventory.resynthesis_triggers ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -1595,10 +1648,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         if (!state.contextPacket) {
           contextPacketViewEl.innerHTML = '<div class="empty">No context packet loaded yet.</div>';
           memoryRelevanceListEl.innerHTML = '<div class="empty">No ranked memory candidates yet.</div>';
+          bridgeListEl.innerHTML = '<div class="empty">No memory bridges yet.</div>';
+          triggerListEl.innerHTML = '<div class="empty">No re-synthesis triggers yet.</div>';
           return;
         }
         const packet = state.contextPacket;
         const relevant = packet.relevant_capsules || [];
+        const bridges = packet.memory_bridges || [];
+        const triggers = packet.resynthesis_triggers || [];
         memoryRelevanceListEl.innerHTML = relevant.length
           ? relevant.map(capsule => `
             <div class="card">
@@ -1609,6 +1666,25 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             </div>
           `).join('')
           : '<div class="empty">No ranked memory candidates yet.</div>';
+        bridgeListEl.innerHTML = bridges.length
+          ? bridges.map(bridge => `
+            <div class="card">
+              <strong>bridge / ${escapeHtml(bridge.bridge_kind)}</strong>
+              <div class="meta">strength: ${escapeHtml(bridge.strength)}</div>
+              <div class="meta">from: ${escapeHtml(bridge.from_capsule_id)}</div>
+              <div class="meta">to: ${escapeHtml(bridge.to_capsule_id)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No memory bridges yet.</div>';
+        triggerListEl.innerHTML = triggers.length
+          ? triggers.map(trigger => `
+            <div class="card">
+              <strong>trigger / ${escapeHtml(trigger.trigger_kind)}</strong>
+              <div class="meta">confidence: ${escapeHtml(trigger.confidence_level)}</div>
+              <div class="meta">${escapeHtml(trigger.summary)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No re-synthesis triggers yet.</div>';
         contextPacketViewEl.innerHTML = `
           <div class="card">
             <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
@@ -1616,6 +1692,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
             <div class="meta">relevant capsules: ${escapeHtml((packet.relevant_capsules || []).length)}</div>
             <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
+            <div class="meta">bridges: ${escapeHtml((packet.memory_bridges || []).length)}</div>
+            <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
             <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
             <div class="meta">blockers: ${escapeHtml((packet.active_snapshot?.blockers || []).join(' | ') || 'none')}</div>
             <div class="meta">next actions: ${escapeHtml((packet.active_snapshot?.next_actions || []).join(' | ') || 'none')}</div>

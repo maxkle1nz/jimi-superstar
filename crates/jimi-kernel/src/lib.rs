@@ -20,10 +20,11 @@ pub use mandala::{
 };
 pub use runtime::{
     CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime,
-    KernelError, LaneRecord, MandalaRegistry, MemoryCapsuleRecord, MemoryCapsuleRegistry,
-    ProviderLaneRecord, ProviderLaneRegistry, SessionManager, SessionRecord, SlotRegistry,
-    SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord, TurnDispatchRegistry,
-    TurnRecord,
+    KernelError, LaneRecord, MandalaRegistry, MemoryBridgeRecord, MemoryBridgeRegistry,
+    MemoryCapsuleRecord, MemoryCapsuleRegistry, ProviderLaneRecord, ProviderLaneRegistry,
+    ResynthesisTriggerRecord, ResynthesisTriggerRegistry, SessionManager, SessionRecord,
+    SlotRegistry, SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord,
+    TurnDispatchRegistry, TurnRecord,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};
