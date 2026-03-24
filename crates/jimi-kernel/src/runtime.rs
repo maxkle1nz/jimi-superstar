@@ -30,6 +30,7 @@ pub enum KernelError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub session_id: SessionId,
+    pub room_id: String,
     pub title: String,
     pub state: SessionState,
     pub active_lane_id: LaneId,
@@ -91,6 +92,7 @@ pub struct TurnDispatchRecord {
 pub struct MemoryCapsuleRecord {
     pub memory_capsule_id: String,
     pub session_id: SessionId,
+    pub room_id: String,
     pub lane_id: LaneId,
     pub turn_id: Option<TurnId>,
     pub role: String,
@@ -214,7 +216,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn create_session(&mut self, title: impl Into<String>) -> SessionRecord {
+    pub fn create_session(
+        &mut self,
+        title: impl Into<String>,
+        room_id: impl Into<String>,
+    ) -> SessionRecord {
         let session_id = SessionId::new();
         let lane_id = LaneId::new();
         let now = Utc::now();
@@ -227,6 +233,7 @@ impl SessionManager {
         };
         let session = SessionRecord {
             session_id: session_id.clone(),
+            room_id: room_id.into(),
             title: title.into(),
             state: SessionState::Active,
             active_lane_id: lane_id.clone(),
@@ -615,6 +622,7 @@ impl MemoryCapsuleRegistry {
     pub fn append(
         &mut self,
         session_id: SessionId,
+        room_id: impl Into<String>,
         lane_id: LaneId,
         turn_id: Option<TurnId>,
         role: impl Into<String>,
@@ -628,6 +636,7 @@ impl MemoryCapsuleRegistry {
         let capsule = MemoryCapsuleRecord {
             memory_capsule_id: format!("memcap_{}", Uuid::now_v7()),
             session_id,
+            room_id: room_id.into(),
             lane_id,
             turn_id,
             role: role.into(),
@@ -652,6 +661,13 @@ impl MemoryCapsuleRegistry {
         self.capsules
             .values()
             .filter(|capsule| capsule.session_id.0 == session_id.0)
+            .collect()
+    }
+
+    pub fn by_room(&self, room_id: &str) -> Vec<&MemoryCapsuleRecord> {
+        self.capsules
+            .values()
+            .filter(|capsule| capsule.room_id == room_id)
             .collect()
     }
 
@@ -941,8 +957,12 @@ pub struct HouseRuntime {
 }
 
 impl HouseRuntime {
-    pub fn bootstrap_session(&mut self, title: impl Into<String>) -> SessionRecord {
-        let session = self.sessions.create_session(title);
+    pub fn bootstrap_session(
+        &mut self,
+        title: impl Into<String>,
+        room_id: impl Into<String>,
+    ) -> SessionRecord {
+        let session = self.sessions.create_session(title, room_id);
         self.events.append(
             ActorRef {
                 actor_type: "system".into(),
@@ -958,6 +978,7 @@ impl HouseRuntime {
             None,
             serde_json::json!({
                 "title": session.title,
+                "room_id": session.room_id,
                 "state": "active",
             }),
         );
@@ -1376,7 +1397,7 @@ mod tests {
     #[test]
     fn bootstrap_session_emits_session_created_event() {
         let mut runtime = HouseRuntime::default();
-        let session = runtime.bootstrap_session("JIMI bootstrap");
+        let session = runtime.bootstrap_session("JIMI bootstrap", "jimi-bootstrap-room");
 
         assert_eq!(runtime.events.all().len(), 1);
         assert_eq!(
@@ -1436,7 +1457,7 @@ mod tests {
     #[test]
     fn durable_store_roundtrip_restores_runtime_state() {
         let mut runtime = HouseRuntime::default();
-        let session = runtime.bootstrap_session("Persistent JIMI");
+        let session = runtime.bootstrap_session("Persistent JIMI", "persistent-jimi-room");
         let turn = runtime
             .sessions
             .create_turn(&session.session_id, &session.active_lane_id, "architect")

@@ -43,6 +43,7 @@ struct HealthResponse {
 #[derive(Debug, Deserialize)]
 struct CreateSessionRequest {
     title: String,
+    room_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +165,7 @@ struct CompactedProviderResponse {
 #[derive(Debug, Serialize)]
 struct ContextPacketResponse {
     session_id: String,
+    room_id: String,
     active_mandala_id: Option<String>,
     memory_policy: MandalaMemoryPolicy,
     hot_capsules: Vec<MemoryCapsuleRecord>,
@@ -271,7 +273,11 @@ async fn create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<SessionRecord>), (StatusCode, String)> {
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
-    let session = runtime.bootstrap_session(request.title);
+    let room_id = request
+        .room_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| slugify_room_id(&request.title));
+    let session = runtime.bootstrap_session(request.title, room_id);
     let new_event = runtime.events.all().last().cloned();
     persist_runtime(&state, &runtime)?;
     drop(runtime);
@@ -345,6 +351,7 @@ async fn create_turn(
 
     runtime.memory_capsules.append(
         turn.session_id.clone(),
+        session.room_id.clone(),
         turn.lane_id.clone(),
         Some(turn.turn_id.clone()),
         "operator",
@@ -584,6 +591,11 @@ fn assemble_context_packet(
 
     ContextPacketResponse {
         session_id: session_id.0.clone(),
+        room_id: runtime
+            .sessions
+            .session(session_id)
+            .map(|session| session.room_id.clone())
+            .unwrap_or_default(),
         active_mandala_id,
         memory_policy,
         hot_capsules,
@@ -855,9 +867,16 @@ async fn execute_latest_dispatch(
         .sessions
         .update_turn_state(&running_dispatch.turn_id, jimi_kernel::TurnState::Completed)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let completed_room_id = runtime
+        .sessions
+        .session(&completed_turn.session_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .room_id
+        .clone();
 
     runtime.memory_capsules.append(
         completed_turn.session_id.clone(),
+        completed_room_id,
         completed_turn.lane_id.clone(),
         Some(completed_turn.turn_id.clone()),
         "assistant",
@@ -1003,9 +1022,16 @@ async fn execute_latest_dispatch_live(
         .sessions
         .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Completed)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let completed_room_id = runtime
+        .sessions
+        .session(&completed_turn.session_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .room_id
+        .clone();
 
     runtime.memory_capsules.append(
         completed_turn.session_id.clone(),
+        completed_room_id,
         completed_turn.lane_id.clone(),
         Some(completed_turn.turn_id.clone()),
         "assistant",
@@ -1695,6 +1721,27 @@ fn run_codex_exec(house_root: &PathBuf, provider_prompt: &str) -> Result<String,
     Ok(output.trim().to_string())
 }
 
+fn slugify_room_id(title: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for ch in title.chars() {
+        let lowered = ch.to_ascii_lowercase();
+        if lowered.is_ascii_alphanumeric() {
+            slug.push(lowered);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    let cleaned = slug.trim_matches('-').to_string();
+    if cleaned.is_empty() {
+        "jimi-room".into()
+    } else {
+        cleaned
+    }
+}
+
 async fn handle_ws_events(mut socket: WebSocket, state: AppState) {
     let snapshot = {
         let runtime = match state.runtime.lock() {
@@ -2271,6 +2318,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           <div class="card">
             <strong>${escapeHtml(session.title)}</strong>
             <div class="meta">session: ${escapeHtml(session.session_id?.[0] || session.session_id || '')}</div>
+            <div class="meta">room: ${escapeHtml(session.room_id || 'default')}</div>
             <div class="meta">active lane: ${escapeHtml(session.active_lane_id?.[0] || session.active_lane_id || '')}</div>
             <div class="meta">state: ${escapeHtml(session.state)}</div>
           </div>
@@ -2492,6 +2540,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         contextPacketViewEl.innerHTML = `
           <div class="card">
             <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
+            <div class="meta">room: ${escapeHtml(packet.room_id || 'default')}</div>
             <div class="meta">active mandala: ${escapeHtml(packet.active_mandala_id || 'none')}</div>
             <div class="meta">providers: ${escapeHtml((packet.providers || []).join(', ') || 'none')}</div>
             <div class="meta">query seed: ${escapeHtml(packet.query_seed || 'none')}</div>

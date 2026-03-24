@@ -42,6 +42,7 @@ impl DurableStore {
             r#"
             CREATE TABLE IF NOT EXISTS sessions (
               session_id TEXT PRIMARY KEY,
+              room_id TEXT NOT NULL DEFAULT '',
               title TEXT NOT NULL,
               state TEXT NOT NULL,
               active_lane_id TEXT NOT NULL,
@@ -138,6 +139,7 @@ impl DurableStore {
             CREATE TABLE IF NOT EXISTS memory_capsules (
               memory_capsule_id TEXT PRIMARY KEY,
               session_id TEXT NOT NULL,
+              room_id TEXT NOT NULL DEFAULT '',
               lane_id TEXT NOT NULL,
               turn_id TEXT,
               role TEXT NOT NULL,
@@ -193,6 +195,16 @@ impl DurableStore {
             "#,
         )?;
         self.ensure_column_exists(
+            "sessions",
+            "room_id",
+            "ALTER TABLE sessions ADD COLUMN room_id TEXT NOT NULL DEFAULT ''",
+        )?;
+        self.ensure_column_exists(
+            "memory_capsules",
+            "room_id",
+            "ALTER TABLE memory_capsules ADD COLUMN room_id TEXT NOT NULL DEFAULT ''",
+        )?;
+        self.ensure_column_exists(
             "summary_checkpoints",
             "source_capsule_count",
             "ALTER TABLE summary_checkpoints ADD COLUMN source_capsule_count INTEGER NOT NULL DEFAULT 0",
@@ -242,10 +254,11 @@ impl DurableStore {
 
         for session in runtime.sessions.sessions() {
             tx.execute(
-                "INSERT OR REPLACE INTO sessions (session_id, title, state, active_lane_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR REPLACE INTO sessions (session_id, room_id, title, state, active_lane_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     session.session_id.0,
+                    session.room_id,
                     session.title,
                     serde_json::to_string(&session.state)?,
                     session.active_lane_id.0,
@@ -393,11 +406,12 @@ impl DurableStore {
 
         for capsule in runtime.memory_capsules.all() {
             tx.execute(
-                "INSERT OR REPLACE INTO memory_capsules (memory_capsule_id, session_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT OR REPLACE INTO memory_capsules (memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     capsule.memory_capsule_id,
                     capsule.session_id.0,
+                    capsule.room_id,
                     capsule.lane_id.0,
                     capsule.turn_id.as_ref().map(|id| id.0.clone()),
                     capsule.role,
@@ -490,7 +504,7 @@ impl DurableStore {
 
         {
             let mut stmt = self.conn.prepare(
-                "SELECT session_id, title, state, active_lane_id, created_at, updated_at FROM sessions ORDER BY created_at ASC",
+                "SELECT session_id, room_id, title, state, active_lane_id, created_at, updated_at FROM sessions ORDER BY created_at ASC",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -500,12 +514,15 @@ impl DurableStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })?;
             for row in rows {
-                let (session_id, title, state, active_lane_id, created_at, updated_at) = row?;
+                let (session_id, room_id, title, state, active_lane_id, created_at, updated_at) =
+                    row?;
                 runtime.sessions.insert_session(SessionRecord {
                     session_id: SessionId(session_id),
+                    room_id,
                     title,
                     state: from_json_string(&state)?,
                     active_lane_id: LaneId(active_lane_id),
@@ -804,28 +821,30 @@ impl DurableStore {
 
         {
             let mut stmt = self.conn.prepare(
-                "SELECT memory_capsule_id, session_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at FROM memory_capsules ORDER BY created_at ASC",
+                "SELECT memory_capsule_id, session_id, room_id, lane_id, turn_id, role, content, intent_summary, relevance_score, confidence_level, privacy_class, band, created_at FROM memory_capsules ORDER BY created_at ASC",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, f32>(7)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                     row.get::<_, f32>(8)?,
-                    row.get::<_, String>(9)?,
+                    row.get::<_, f32>(9)?,
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
                 ))
             })?;
             for row in rows {
                 let (
                     memory_capsule_id,
                     session_id,
+                    room_id,
                     lane_id,
                     turn_id,
                     role,
@@ -842,6 +861,7 @@ impl DurableStore {
                     .insert_existing(MemoryCapsuleRecord {
                         memory_capsule_id,
                         session_id: SessionId(session_id),
+                        room_id,
                         lane_id: LaneId(lane_id),
                         turn_id: turn_id.map(TurnId),
                         role,
