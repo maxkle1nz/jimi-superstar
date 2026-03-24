@@ -510,19 +510,49 @@ async fn create_turn(
             )
         })?;
 
+    let (turn, dispatch) = queue_turn_for_lane(
+        &mut runtime,
+        &session,
+        &provider_lane,
+        request.intent_mode.clone(),
+        request.intent_summary.clone(),
+        "operator",
+        "cockpit.turns",
+    )?;
+
+    let new_events: Vec<EventEnvelope> =
+        runtime.events.all().iter().rev().take(2).cloned().collect();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    for event in new_events.into_iter().rev() {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(TurnBootstrapResponse { turn, dispatch }),
+    ))
+}
+
+fn queue_turn_for_lane(
+    runtime: &mut HouseRuntime,
+    session: &SessionRecord,
+    provider_lane: &ProviderLaneRecord,
+    intent_mode: String,
+    intent_summary: String,
+    actor_type: &str,
+    actor_id: &str,
+) -> Result<(TurnRecord, TurnDispatchRecord), (StatusCode, String)> {
     let turn = runtime
         .sessions
-        .create_turn(
-            &session.session_id,
-            &session.active_lane_id,
-            request.intent_mode.clone(),
-        )
+        .create_turn(&session.session_id, &session.active_lane_id, intent_mode.clone())
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
 
     runtime.events.append(
         ActorRef {
-            actor_type: "operator".into(),
-            actor_id: "cockpit.turns".into(),
+            actor_type: actor_type.into(),
+            actor_id: actor_id.into(),
         },
         SubjectRef {
             subject_type: "turn".into(),
@@ -533,8 +563,8 @@ async fn create_turn(
         Some(&turn.lane_id),
         Some(&turn.turn_id),
         serde_json::json!({
-            "intent_mode": request.intent_mode,
-            "intent_summary": request.intent_summary.clone(),
+            "intent_mode": intent_mode,
+            "intent_summary": intent_summary.clone(),
         }),
     );
 
@@ -543,7 +573,7 @@ async fn create_turn(
         turn.session_id.clone(),
         turn.lane_id.clone(),
         provider_lane.provider_lane_id.clone(),
-        request.intent_summary.clone(),
+        intent_summary.clone(),
         "queued",
     );
 
@@ -552,9 +582,9 @@ async fn create_turn(
         session.room_id.clone(),
         turn.lane_id.clone(),
         Some(turn.turn_id.clone()),
-        "operator",
-        request.intent_summary.clone(),
-        Some(request.intent_summary.clone()),
+        if actor_type == "house" { "distiller" } else { "operator" },
+        intent_summary.clone(),
+        Some(intent_summary.clone()),
         0.95,
         0.95,
         "session_open",
@@ -580,23 +610,11 @@ async fn create_turn(
             "provider_lane_id": provider_lane.provider_lane_id.clone(),
             "provider": provider_lane.provider.clone(),
             "model": provider_lane.model.clone(),
-            "intent_summary": request.intent_summary,
+            "intent_summary": intent_summary,
         }),
     );
 
-    let new_events: Vec<EventEnvelope> =
-        runtime.events.all().iter().rev().take(2).cloned().collect();
-    persist_runtime(&state, &runtime)?;
-    drop(runtime);
-
-    for event in new_events.into_iter().rev() {
-        let _ = state.events_tx.send(event);
-    }
-
-    Ok((
-        StatusCode::CREATED,
-        Json(TurnBootstrapResponse { turn, dispatch }),
-    ))
+    Ok((turn, dispatch))
 }
 
 async fn list_events(State(state): State<AppState>) -> Json<Vec<EventEnvelope>> {
@@ -2040,6 +2058,48 @@ async fn run_latest_dispatch_live_once(
             "mode": provider_adapter_label(&resolve_provider_adapter(&executing_lane)),
         }),
     );
+
+    let queued_dispatches_after_completion = runtime
+        .dispatches
+        .all()
+        .into_iter()
+        .filter(|candidate| {
+            candidate.session_id == completed_turn.session_id && candidate.status == "queued"
+        })
+        .count();
+    let active_next_action = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.as_ref())
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok())
+        .and_then(|mandala| mandala.active_snapshot.next_actions.first().cloned());
+
+    if queued_dispatches_after_completion == 0 {
+        if let Some(next_action) = active_next_action {
+            if !next_action.trim().is_empty()
+                && next_action.trim() != dispatch.intent_summary.trim()
+            {
+                if let Ok(session) = runtime.sessions.session(&completed_turn.session_id).cloned() {
+                    let _ = queue_turn_for_lane(
+                        &mut runtime,
+                        &session,
+                        &executing_lane,
+                        "autonomy_followup".into(),
+                        next_action.clone(),
+                        "house",
+                        "autonomy.followup",
+                    );
+                    if let Ok(mut autonomy_status) = state.autonomy_status.lock() {
+                        mark_autonomy_transition(
+                            &mut autonomy_status,
+                            format!("next_action_queued:{}", next_action),
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     let new_event = runtime.events.all().last().cloned();
     persist_runtime(&state, &runtime)?;
