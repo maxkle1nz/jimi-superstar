@@ -171,8 +171,11 @@ pub struct WorldStateProcessEntry {
 pub struct WorldStateSlice {
     pub scope: String,
     pub workspace_root: String,
+    pub workspace_health: String,
+    pub git_dirty: bool,
     pub workspace_entry_count: usize,
     pub workspace_entries: Vec<WorldStateWorkspaceEntry>,
+    pub changed_files: Vec<String>,
     pub running_processes: Vec<WorldStateProcessEntry>,
     pub observed_at: chrono::DateTime<Utc>,
 }

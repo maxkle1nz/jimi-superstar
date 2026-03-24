@@ -805,6 +805,13 @@ fn build_provider_prompt(
         .map(|process| format!("- pid={} {}", process.pid, process.command))
         .collect::<Vec<_>>()
         .join("\n");
+    let changed_files_context = packet
+        .world_state_slice
+        .changed_files
+        .iter()
+        .map(|path| format!("- {}", path))
+        .collect::<Vec<_>>()
+        .join("\n");
     let summaries = packet
         .summary_checkpoints
         .iter()
@@ -858,7 +865,10 @@ fn build_provider_prompt(
             "Room memory:\n{room_relevant_context}\n\n",
             "House memory:\n{global_relevant_context}\n\n",
             "World state root: {workspace_root}\n",
+            "Workspace health: {workspace_health}\n",
+            "Git dirty: {git_dirty}\n",
             "World state entries:\n{world_state_context}\n\n",
+            "Changed files:\n{changed_files_context}\n\n",
             "Running processes:\n{process_context}\n\n",
             "Summaries:\n{summaries}\n\n",
             "Return only the answer for this turn. Do not explain the packet."
@@ -925,10 +935,21 @@ fn build_provider_prompt(
             global_relevant_context
         },
         workspace_root = packet.world_state_slice.workspace_root,
+        workspace_health = packet.world_state_slice.workspace_health,
+        git_dirty = if packet.world_state_slice.git_dirty {
+            "yes"
+        } else {
+            "no"
+        },
         world_state_context = if world_state_context.is_empty() {
             "- none".into()
         } else {
             world_state_context
+        },
+        changed_files_context = if changed_files_context.is_empty() {
+            "- none".into()
+        } else {
+            changed_files_context
         },
         process_context = if process_context.is_empty() {
             "- none".into()
@@ -1005,8 +1026,11 @@ fn build_world_state_slice(
         return WorldStateSlice {
             scope: "disabled".into(),
             workspace_root: house_root.display().to_string(),
+            workspace_health: "disabled".into(),
+            git_dirty: false,
             workspace_entry_count: 0,
             workspace_entries: Vec::new(),
+            changed_files: Vec::new(),
             running_processes: Vec::new(),
             observed_at: chrono::Utc::now(),
         };
@@ -1080,15 +1104,44 @@ fn build_world_state_slice(
         Vec::new()
     };
 
+    let changed_files = Command::new("git")
+        .arg("-C")
+        .arg(house_root)
+        .args(["status", "--short"])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToOwned::to_owned)
+                .take(memory_policy.world_state_entry_limit.max(1))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let git_dirty = !changed_files.is_empty();
+    let workspace_health = if !house_root.join(".git").exists() {
+        "ungit".to_string()
+    } else if git_dirty {
+        "dirty".to_string()
+    } else {
+        "clean".to_string()
+    };
+
     WorldStateSlice {
         scope,
         workspace_root: house_root.display().to_string(),
+        workspace_health,
+        git_dirty,
         workspace_entry_count: if include_workspace {
             workspace_entry_count
         } else {
             0
         },
         workspace_entries,
+        changed_files,
         running_processes,
         observed_at: chrono::Utc::now(),
     }
@@ -3345,12 +3398,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">lookup sources: ${escapeHtml((world.lookup_sources || []).join(' | ') || 'none')}</div>
             <div class="meta">world state enabled: ${escapeHtml(slice.scope === 'disabled' ? 'no' : 'yes')}</div>
             <div class="meta">workspace root: ${escapeHtml(slice.workspace_root || 'none')}</div>
+            <div class="meta">workspace health: ${escapeHtml(slice.workspace_health || 'unknown')}</div>
+            <div class="meta">git dirty: ${escapeHtml(slice.git_dirty ? 'yes' : 'no')}</div>
             <div class="meta">workspace entries: ${escapeHtml(slice.workspace_entry_count ?? 0)}</div>
             <div class="meta">processes shown: ${escapeHtml((slice.running_processes || []).length)}</div>
           </div>
           <div class="card">
             <strong>Workspace Snapshot</strong>
             ${((slice.workspace_entries || []).map(entry => `<div class="meta">- [${escapeHtml(entry.kind)}:${escapeHtml(entry.size_bytes)}] ${escapeHtml(entry.path)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Changed Files</strong>
+            ${((slice.changed_files || []).map(path => `<div class="meta">- ${escapeHtml(path)}</div>`).join('')) || '<div class="meta">- none</div>'}
           </div>
           <div class="card">
             <strong>Process Snapshot</strong>
@@ -3673,7 +3732,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
             <div class="meta">promotions: ${escapeHtml((packet.memory_promotions || []).length)}</div>
             <div class="meta">world scope: ${escapeHtml(packet.world_state_slice?.scope || 'none')}</div>
+            <div class="meta">workspace health: ${escapeHtml(packet.world_state_slice?.workspace_health || 'unknown')}</div>
+            <div class="meta">git dirty: ${escapeHtml(packet.world_state_slice?.git_dirty ? 'yes' : 'no')}</div>
             <div class="meta">world entries: ${escapeHtml(packet.world_state_slice?.workspace_entry_count ?? 0)}</div>
+            <div class="meta">changed files: ${escapeHtml((packet.world_state_slice?.changed_files || []).length)}</div>
             <div class="meta">world processes: ${escapeHtml((packet.world_state_slice?.running_processes || []).length)}</div>
             <div class="meta">boot include: ${escapeHtml((packet.memory_policy?.boot_include || []).join(' | ') || 'none')}</div>
             <div class="meta">lookup sources: ${escapeHtml((packet.memory_policy?.lookup_sources || []).join(' | ') || 'none')}</div>
