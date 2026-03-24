@@ -21,8 +21,8 @@ use jimi_kernel::{
     HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaStableMemory, MemoryBridgeRecord, MemoryCapsuleRecord,
-    MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord, SlotBindingState,
-    SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
+    MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord,
+    SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
@@ -191,6 +191,12 @@ struct CompactedProviderResponse {
     confidence_level: f32,
     raw_length: usize,
     compacted_length: usize,
+}
+
+#[derive(Debug, Clone)]
+enum ProviderAdapterKind {
+    CodexCli,
+    Unsupported(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -1065,7 +1071,7 @@ async fn execute_latest_dispatch(
 async fn execute_latest_dispatch_live(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<DispatchExecutionResponse>), (StatusCode, String)> {
-    let (dispatch, provider_lane_id, provider_prompt, house_root) = {
+    let (dispatch, provider_lane, provider_prompt, house_root) = {
         let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
 
         let latest_dispatch = runtime
@@ -1091,6 +1097,20 @@ async fn execute_latest_dispatch_live(
             .update_turn_state(&latest_dispatch.turn_id, jimi_kernel::TurnState::Executing)
             .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
 
+        let provider_lane = runtime
+            .providers
+            .all()
+            .into_iter()
+            .find(|provider| provider.provider_lane_id == running_dispatch.provider_lane_id)
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "provider lane metadata missing for dispatch".to_string(),
+                )
+            })?;
+        let adapter = resolve_provider_adapter(&provider_lane);
+
         runtime.events.append(
             ActorRef {
                 actor_type: "provider".into(),
@@ -1108,8 +1128,10 @@ async fn execute_latest_dispatch_live(
                 "dispatch_id": running_dispatch.dispatch_id.clone(),
                 "provider_lane_id": running_dispatch.provider_lane_id.clone(),
                 "status": "running",
-                "mode": "live_codex",
+                "mode": adapter.label(),
                 "context_packet_ready": true,
+                "provider": provider_lane.provider.clone(),
+                "model": provider_lane.model.clone(),
             }),
         );
 
@@ -1130,17 +1152,19 @@ async fn execute_latest_dispatch_live(
 
         (
             running_dispatch.clone(),
-            running_dispatch.provider_lane_id.clone(),
+            provider_lane,
             provider_prompt,
             state.house_root.clone(),
         )
     };
 
-    let output_text =
-        tokio::task::spawn_blocking(move || run_codex_exec(&house_root, &provider_prompt))
-            .await
-            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-            .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    let adapter = resolve_provider_adapter(&provider_lane);
+    let output_text = tokio::task::spawn_blocking(move || {
+        run_provider_adapter(&adapter, &house_root, &provider_prompt)
+    })
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+    .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     let compacted_response = compact_provider_response(&output_text);
 
     let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
@@ -1177,7 +1201,7 @@ async fn execute_latest_dispatch_live(
     runtime.events.append(
         ActorRef {
             actor_type: "provider".into(),
-            actor_id: provider_lane_id,
+            actor_id: provider_lane.provider_lane_id.clone(),
         },
         SubjectRef {
             subject_type: "turn".into(),
@@ -1840,6 +1864,35 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
 
 fn internal_store_error(error: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+}
+
+impl ProviderAdapterKind {
+    fn label(&self) -> &'static str {
+        match self {
+            ProviderAdapterKind::CodexCli => "live_codex",
+            ProviderAdapterKind::Unsupported(_) => "unsupported",
+        }
+    }
+}
+
+fn resolve_provider_adapter(provider_lane: &ProviderLaneRecord) -> ProviderAdapterKind {
+    match provider_lane.provider.as_str() {
+        "codex" => ProviderAdapterKind::CodexCli,
+        other => ProviderAdapterKind::Unsupported(other.to_string()),
+    }
+}
+
+fn run_provider_adapter(
+    adapter: &ProviderAdapterKind,
+    house_root: &PathBuf,
+    provider_prompt: &str,
+) -> Result<String, String> {
+    match adapter {
+        ProviderAdapterKind::CodexCli => run_codex_exec(house_root, provider_prompt),
+        ProviderAdapterKind::Unsupported(provider) => {
+            Err(format!("provider adapter not implemented yet: {provider}"))
+        }
+    }
 }
 
 fn run_codex_exec(house_root: &PathBuf, provider_prompt: &str) -> Result<String, String> {
