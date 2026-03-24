@@ -21,3 +21,9 @@ Core runtime domains:
 - Interface Domain
 
 The runtime is event-backed, policy-centered, and provider-neutral.
+
+Additional constitutional centerlines:
+
+- `RETROBUILDER` is the build doctrine
+- `Mandala` is the canonical agent-state and capsule contract
+- `FieldVault` is the canonical sealed artifact and shard substrate

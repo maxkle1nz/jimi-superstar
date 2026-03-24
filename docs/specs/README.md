@@ -15,3 +15,8 @@ The constitutional spec stack for JIMI SUPERSTAR is currently:
 - Implementation sequence
 
 These specs currently live in the originating design workspace and will be imported here as the repository becomes the canonical home of the system.
+
+Steering overlays now include:
+
+- `RETROBUILDER` as the official build method
+- `Mandala + FieldVault` as the canonical persistence and capsule model

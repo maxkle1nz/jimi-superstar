@@ -4,6 +4,11 @@ JIMI SUPERSTAR is the sovereign multi-engine agent house.
 
 It is designed to host many engines, import many skill families, expose one coherent operator cockpit, and keep memory, policy, truth, and orchestration owned by the house rather than by any single provider.
 
+The house is now also grounded in two constitutional ideas:
+
+- `RETROBUILDER`: build backward from a fully grounded finished system
+- `Mandala + FieldVault`: agent identity, memory, and installable capsules are first-class, not optional add-ons
+
 ## House Thesis
 
 JIMI SUPERSTAR is not:
@@ -19,6 +24,42 @@ JIMI SUPERSTAR is:
 - a universal capability house
 - a multi-truth system
 - a cockpit-driven operator surface
+- a mandala-native agent substrate
+- a fieldvault-sealed capsule system
+
+## RETROBUILDER
+
+RETROBUILDER is the official build method for this repository.
+
+It means we define the full program in the field of ideas first:
+
+- constitution
+- contracts
+- state machines
+- security
+- flows
+- persistence
+
+and only then scaffold and implement from the center outward.
+
+## Mandala And FieldVault
+
+JIMI SUPERSTAR should not treat Markdown as the canonical saved form of an agent.
+
+The intended direction is:
+
+- `Mandala` for agent identity, memory, execution policy, and installable capsule shape
+- `FieldVault` for sealed `.fld` artifacts, sacred shards, and protected capsule payloads
+- Markdown for exports, projections, and human-readable reports when useful
+
+This makes the house capable of hosting a marketplace of installable agents, each with their own:
+
+- personality
+- skills
+- databases
+- internal programs
+- memory policies
+- sealed private shards
 
 ## Stage 1 Focus
 
@@ -36,6 +77,7 @@ The first implementation slice builds the minimal sovereign kernel:
 - `apps/jimi-cockpit/`: operator cockpit app placeholder
 - `docs/architecture/`: house architecture overview
 - `docs/specs/`: frozen architecture contracts and build sequence
+- `docs/specs/`: steering docs for RETROBUILDER and Mandala/FieldVault
 
 ## Immediate Build Order
 
