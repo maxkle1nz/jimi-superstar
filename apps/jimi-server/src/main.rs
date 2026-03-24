@@ -1,6 +1,7 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
+    process::Command,
     sync::{Arc, Mutex},
 };
 
@@ -30,6 +31,7 @@ struct AppState {
     runtime: Arc<Mutex<HouseRuntime>>,
     store: Arc<Mutex<DurableStore>>,
     events_tx: broadcast::Sender<EventEnvelope>,
+    house_root: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +113,7 @@ async fn main() {
         runtime: Arc::new(Mutex::new(runtime)),
         store: Arc::new(Mutex::new(store)),
         events_tx: broadcast::channel(256).0,
+        house_root: std::env::current_dir().expect("failed to resolve current dir"),
     };
 
     let app = Router::new()
@@ -120,6 +123,7 @@ async fn main() {
         .route("/turns", get(list_turns).post(create_turn))
         .route("/dispatches", get(list_dispatches))
         .route("/dispatches/execute-latest", post(execute_latest_dispatch))
+        .route("/dispatches/execute-latest-live", post(execute_latest_dispatch_live))
         .route("/mandalas", get(list_mandalas))
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
@@ -375,6 +379,123 @@ async fn execute_latest_dispatch(
     drop(runtime);
 
     for event in new_events.into_iter().rev() {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DispatchExecutionResponse {
+            dispatch: completed_dispatch,
+            turn: completed_turn,
+            output_text,
+        }),
+    ))
+}
+
+async fn execute_latest_dispatch_live(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<DispatchExecutionResponse>), (StatusCode, String)> {
+    let (dispatch, provider_lane_id, house_root) = {
+        let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+        let latest_dispatch = runtime
+            .dispatches
+            .all()
+            .into_iter()
+            .rev()
+            .find(|dispatch| dispatch.status == "queued")
+            .cloned()
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "no queued dispatches available".to_string()))?;
+
+        let running_dispatch = runtime
+            .dispatches
+            .update_status(&latest_dispatch.dispatch_id, "running")
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+        let _ = runtime
+            .sessions
+            .update_turn_state(&latest_dispatch.turn_id, jimi_kernel::TurnState::Executing)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+        runtime.events.append(
+            ActorRef {
+                actor_type: "provider".into(),
+                actor_id: running_dispatch.provider_lane_id.clone(),
+            },
+            SubjectRef {
+                subject_type: "dispatch".into(),
+                subject_id: running_dispatch.dispatch_id.clone(),
+            },
+            EventType::ToolStarted,
+            Some(&running_dispatch.session_id),
+            Some(&running_dispatch.lane_id),
+            Some(&running_dispatch.turn_id),
+            serde_json::json!({
+                "dispatch_id": running_dispatch.dispatch_id.clone(),
+                "provider_lane_id": running_dispatch.provider_lane_id.clone(),
+                "status": "running",
+                "mode": "live_codex",
+            }),
+        );
+
+        let new_event = runtime.events.all().last().cloned();
+        persist_runtime(&state, &runtime)?;
+        drop(runtime);
+
+        if let Some(event) = new_event {
+            let _ = state.events_tx.send(event);
+        }
+
+        (
+            running_dispatch.clone(),
+            running_dispatch.provider_lane_id.clone(),
+            state.house_root.clone(),
+        )
+    };
+
+    let output_text = tokio::task::spawn_blocking(move || {
+        run_codex_exec(&house_root, &dispatch.intent_summary)
+    })
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+    .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let completed_dispatch = runtime
+        .dispatches
+        .update_status(&dispatch.dispatch_id, "completed")
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let completed_turn = runtime
+        .sessions
+        .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Completed)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "provider".into(),
+            actor_id: provider_lane_id,
+        },
+        SubjectRef {
+            subject_type: "turn".into(),
+            subject_id: completed_turn.turn_id.0.clone(),
+        },
+        EventType::MessageCompleted,
+        Some(&completed_turn.session_id),
+        Some(&completed_turn.lane_id),
+        Some(&completed_turn.turn_id),
+        serde_json::json!({
+            "dispatch_id": completed_dispatch.dispatch_id.clone(),
+            "provider_lane_id": completed_dispatch.provider_lane_id.clone(),
+            "output_text": output_text.clone(),
+            "status": "completed",
+            "mode": "live_codex",
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
         let _ = state.events_tx.send(event);
     }
 
@@ -691,6 +812,38 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "internal state lock poisoned".into(),
     )
+}
+
+fn run_codex_exec(house_root: &PathBuf, intent_summary: &str) -> Result<String, String> {
+    let output_path = std::env::temp_dir().join(format!("jimi-codex-output-{}.txt", uuid::Uuid::now_v7()));
+    let prompt = format!(
+        "You are the live provider lane for JIMI SUPERSTAR. Respond briefly and concretely to this routed turn: {}",
+        intent_summary
+    );
+
+    let status = Command::new("codex")
+        .arg("exec")
+        .arg("--skip-git-repo-check")
+        .arg("--sandbox")
+        .arg("workspace-write")
+        .arg("-a")
+        .arg("never")
+        .arg("--output-last-message")
+        .arg(&output_path)
+        .arg("--cd")
+        .arg(house_root)
+        .arg(prompt)
+        .status()
+        .map_err(|error| error.to_string())?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&output_path);
+        return Err(format!("codex exec failed with status {}", status));
+    }
+
+    let output = std::fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(output_path);
+    Ok(output.trim().to_string())
 }
 
 async fn handle_ws_events(mut socket: WebSocket, state: AppState) {
@@ -1020,6 +1173,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <button id="execute-dispatch">Execute Latest Dispatch</button>
               <div class="small" id="execute-status">awaiting execution</div>
             </div>
+            <div class="action-row">
+              <button id="execute-dispatch-live">Execute Latest Dispatch Live</button>
+              <div class="small" id="execute-live-status">awaiting codex lane</div>
+            </div>
             <div class="list" id="turn-list"></div>
             <div class="list" id="dispatch-list"></div>
           </div>
@@ -1066,6 +1223,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const turnStatusEl = document.getElementById('turn-status');
       const executeDispatchEl = document.getElementById('execute-dispatch');
       const executeStatusEl = document.getElementById('execute-status');
+      const executeDispatchLiveEl = document.getElementById('execute-dispatch-live');
+      const executeLiveStatusEl = document.getElementById('execute-live-status');
       const turnListEl = document.getElementById('turn-list');
       const dispatchListEl = document.getElementById('dispatch-list');
       const mandalaListEl = document.getElementById('mandala-list');
@@ -1363,6 +1522,17 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
       }
 
+      async function executeLatestDispatchLive() {
+        executeLiveStatusEl.textContent = 'running codex live lane…';
+        const res = await fetch('/dispatches/execute-latest-live', { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to execute latest dispatch live');
+        }
+        const result = await res.json();
+        executeLiveStatusEl.textContent = `${result.dispatch.provider_lane_id} -> live completed`;
+        await Promise.all([refreshInventory(), refreshTurns(), refreshDispatches(), refreshEvents()]);
+      }
+
       async function bootstrapCoreCapsule() {
         bootstrapStatusEl.textContent = 'installing core capsule…';
         const res = await fetch('/bootstrap/core-capsule', { method: 'POST' });
@@ -1487,6 +1657,15 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         } catch (error) {
           console.error(error);
           executeStatusEl.textContent = error.message;
+        }
+      });
+
+      executeDispatchLiveEl.addEventListener('click', async () => {
+        try {
+          await executeLatestDispatchLive();
+        } catch (error) {
+          console.error(error);
+          executeLiveStatusEl.textContent = error.message;
         }
       });
 
