@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     net::SocketAddr,
     path::PathBuf,
     process::Command,
@@ -24,7 +25,7 @@ use jimi_kernel::{
     SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Clone)]
 struct AppState {
@@ -32,6 +33,18 @@ struct AppState {
     store: Arc<Mutex<DurableStore>>,
     events_tx: broadcast::Sender<EventEnvelope>,
     house_root: PathBuf,
+    distiller_tx: mpsc::UnboundedSender<String>,
+    distiller_status: Arc<Mutex<TranscriptDistillerStatus>>,
+    distiller_pending: Arc<Mutex<BTreeSet<String>>>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+struct TranscriptDistillerStatus {
+    running: bool,
+    pending: usize,
+    processed: u64,
+    failed: u64,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +107,15 @@ struct MacroStatusResponse {
     next: Vec<&'static str>,
     later: Vec<&'static str>,
     menu: Vec<MacroMenuItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct DistillerStatusResponse {
+    running: bool,
+    pending: usize,
+    processed: u64,
+    failed: u64,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,13 +214,21 @@ async fn main() {
 
     let store = DurableStore::open(&db_path).expect("failed to open durable store");
     let runtime = store.load_runtime().unwrap_or_default();
+    let (distiller_tx, distiller_rx) = mpsc::unbounded_channel();
+    let distiller_status_state = Arc::new(Mutex::new(TranscriptDistillerStatus::default()));
+    let distiller_pending = Arc::new(Mutex::new(BTreeSet::new()));
 
     let state = AppState {
         runtime: Arc::new(Mutex::new(runtime)),
         store: Arc::new(Mutex::new(store)),
         events_tx: broadcast::channel(256).0,
         house_root: std::env::current_dir().expect("failed to resolve current dir"),
+        distiller_tx,
+        distiller_status: distiller_status_state.clone(),
+        distiller_pending: distiller_pending.clone(),
     };
+
+    spawn_transcript_distiller(state.clone(), distiller_rx);
 
     let app = Router::new()
         .route("/", get(cockpit))
@@ -232,6 +262,7 @@ async fn main() {
         .route("/providers", get(list_providers))
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
+        .route("/status/distiller", get(distiller_status))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
@@ -1093,6 +1124,7 @@ async fn execute_latest_dispatch_live(
     if let Some(event) = new_event {
         let _ = state.events_tx.send(event);
     }
+    enqueue_transcript_distillation(&state, &completed_turn.session_id);
 
     Ok((
         StatusCode::CREATED,
@@ -1224,6 +1256,21 @@ async fn macro_status(State(state): State<AppState>) -> Json<MacroStatusResponse
 async fn control_plane_status(State(state): State<AppState>) -> Json<ControlPlaneResponse> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(build_control_plane_status(&runtime.inventory()))
+}
+
+async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatusResponse> {
+    let status = state
+        .distiller_status
+        .lock()
+        .expect("distiller status lock poisoned")
+        .clone();
+    Json(DistillerStatusResponse {
+        running: status.running,
+        pending: status.pending,
+        processed: status.processed,
+        failed: status.failed,
+        last_error: status.last_error,
+    })
 }
 
 fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
@@ -1759,6 +1806,191 @@ fn slugify_room_id(title: &str) -> String {
     }
 }
 
+fn enqueue_transcript_distillation(state: &AppState, session_id: &jimi_kernel::SessionId) {
+    let mut pending = match state.distiller_pending.lock() {
+        Ok(pending) => pending,
+        Err(_) => return,
+    };
+    if !pending.insert(session_id.0.clone()) {
+        return;
+    }
+    let pending_len = pending.len();
+    drop(pending);
+
+    if let Ok(mut status) = state.distiller_status.lock() {
+        status.pending = pending_len;
+    }
+
+    let _ = state.distiller_tx.send(session_id.0.clone());
+}
+
+fn spawn_transcript_distiller(state: AppState, mut rx: mpsc::UnboundedReceiver<String>) {
+    tokio::spawn(async move {
+        if let Ok(mut status) = state.distiller_status.lock() {
+            status.running = true;
+        }
+
+        while let Some(session_id) = rx.recv().await {
+            let result =
+                distill_session_transcript(&state, &jimi_kernel::SessionId(session_id.clone()));
+            let pending_len = {
+                let mut pending = match state.distiller_pending.lock() {
+                    Ok(pending) => pending,
+                    Err(_) => continue,
+                };
+                pending.remove(&session_id);
+                pending.len()
+            };
+
+            if let Ok(mut status) = state.distiller_status.lock() {
+                status.pending = pending_len;
+                match result {
+                    Ok(processed) => {
+                        if processed {
+                            status.processed += 1;
+                        }
+                    }
+                    Err(error) => {
+                        status.failed += 1;
+                        status.last_error = Some(error.clone());
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn distill_session_transcript(
+    state: &AppState,
+    session_id: &jimi_kernel::SessionId,
+) -> Result<bool, String> {
+    let mut runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| "runtime lock poisoned".to_string())?;
+    let session = runtime
+        .sessions
+        .session(session_id)
+        .map_err(|error| error.to_string())?
+        .clone();
+    let latest_turn = runtime
+        .sessions
+        .turns()
+        .into_iter()
+        .filter(|turn| turn.session_id.0 == session_id.0)
+        .max_by_key(|turn| turn.created_at)
+        .cloned();
+
+    let Some(latest_turn) = latest_turn else {
+        return Ok(false);
+    };
+
+    let has_transcript_capsule = runtime
+        .memory_capsules
+        .by_session(session_id)
+        .into_iter()
+        .any(|capsule| {
+            capsule.role == "distiller"
+                && capsule.turn_id.as_ref().map(|turn| turn.0.as_str())
+                    == Some(latest_turn.turn_id.0.as_str())
+                && capsule.intent_summary.as_deref() == Some("conversation/transcript")
+        });
+    if has_transcript_capsule {
+        return Ok(false);
+    }
+
+    let recent_capsules = runtime
+        .memory_capsules
+        .by_session(session_id)
+        .into_iter()
+        .filter(|capsule| capsule.role == "operator" || capsule.role == "assistant")
+        .rev()
+        .take(6)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+
+    if recent_capsules.is_empty() {
+        return Ok(false);
+    }
+
+    let transcript_summary = recent_capsules
+        .iter()
+        .map(|capsule| format!("{}: {}", capsule.role, capsule.content))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    let latest_operator = recent_capsules
+        .iter()
+        .rev()
+        .find(|capsule| capsule.role == "operator")
+        .cloned();
+
+    let mut distilled_capsules = 1;
+    runtime.memory_capsules.append(
+        session_id.clone(),
+        session.room_id.clone(),
+        latest_turn.lane_id.clone(),
+        Some(latest_turn.turn_id.clone()),
+        "distiller",
+        transcript_summary,
+        Some("conversation/transcript".into()),
+        0.82,
+        0.86,
+        "session_open",
+        "warm",
+    );
+
+    if let Some(operator_capsule) = latest_operator {
+        distilled_capsules += 1;
+        runtime.memory_capsules.append(
+            session_id.clone(),
+            session.room_id.clone(),
+            latest_turn.lane_id.clone(),
+            Some(latest_turn.turn_id.clone()),
+            "distiller",
+            format!("Operator directive focus: {}", operator_capsule.content),
+            Some("conversation/directive".into()),
+            0.79,
+            0.84,
+            "session_open",
+            "warm",
+        );
+    }
+
+    runtime.refresh_memory_for_session(session_id);
+    runtime.events.append(
+        ActorRef {
+            actor_type: "worker".into(),
+            actor_id: "transcript.distiller".into(),
+        },
+        SubjectRef {
+            subject_type: "session".into(),
+            subject_id: session_id.0.clone(),
+        },
+        EventType::TruthFusionUpdated,
+        Some(session_id),
+        Some(&latest_turn.lane_id),
+        Some(&latest_turn.turn_id),
+        serde_json::json!({
+            "distilled_capsules": distilled_capsules,
+            "room_id": session.room_id,
+            "kinds": ["conversation/transcript", "conversation/directive"],
+        }),
+    );
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(state, &runtime).map_err(|(_, error)| error)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok(true)
+}
+
 async fn handle_ws_events(mut socket: WebSocket, state: AppState) {
     let snapshot = {
         let runtime = match state.runtime.lock() {
@@ -2158,6 +2390,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Transcript Distiller</h2>
+            <div class="small">Background worker for transcript-to-capsule distillation.</div>
+            <div class="list" id="distiller-status-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <div class="list" id="memory-capsule-list"></div>
@@ -2217,6 +2455,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const macroStatusViewEl = document.getElementById('macro-status-view');
       const macroMenuViewEl = document.getElementById('macro-menu-view');
       const controlPlaneViewEl = document.getElementById('control-plane-view');
+      const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const memoryPolicyFormEl = document.getElementById('memory-policy-form');
       const hotLimitEl = document.getElementById('hot-limit');
       const relevantLimitEl = document.getElementById('relevant-limit');
@@ -2242,7 +2481,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         artifacts: [],
         providers: [],
         macroStatus: null,
-        controlPlane: null
+        controlPlane: null,
+        distillerStatus: null
       };
 
       function renderInventory(data) {
@@ -2326,6 +2566,24 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">${escapeHtml(section.summary)}</div>
           </div>
         `).join('');
+      }
+
+      function renderDistillerStatus() {
+        if (!state.distillerStatus) {
+          distillerStatusViewEl.innerHTML = '<div class="empty">Distiller status not loaded yet.</div>';
+          return;
+        }
+        const status = state.distillerStatus;
+        distillerStatusViewEl.innerHTML = `
+          <div class="card">
+            <strong>Transcript Distiller</strong>
+            <div class="meta">running: ${escapeHtml(status.running ? 'yes' : 'no')}</div>
+            <div class="meta">pending: ${escapeHtml(status.pending)}</div>
+            <div class="meta">processed: ${escapeHtml(status.processed)}</div>
+            <div class="meta">failed: ${escapeHtml(status.failed)}</div>
+            <div class="meta">last error: ${escapeHtml(status.last_error || 'none')}</div>
+          </div>
+        `;
       }
 
       function renderSessions() {
@@ -2633,6 +2891,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderControlPlane();
       }
 
+      async function refreshDistillerStatus() {
+        const res = await fetch('/status/distiller');
+        state.distillerStatus = await res.json();
+        renderDistillerStatus();
+      }
+
       async function updateMemoryPolicy() {
         const mandala = state.mandalas[0];
         if (!mandala?.self_section?.id) {
@@ -2790,6 +3054,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshDistillerStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -2812,6 +3077,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshDistillerStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -2855,6 +3121,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshDistillerStatus(),
           refreshMandalas(),
           refreshCapsules(),
           refreshSlots(),
@@ -2871,7 +3138,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -2883,7 +3150,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -2902,11 +3169,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
@@ -2916,6 +3185,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -2926,6 +3196,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
@@ -2933,19 +3204,29 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'artifact_created') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
             } else if (event.event_type === 'engine_selected') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
               refreshProviders().catch(console.error);
               refreshDispatches().catch(console.error);
+            } else if (event.event_type === 'truth_fusion_updated') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshMemoryCapsules().catch(console.error);
+              refreshContextPacket().catch(console.error);
             }
           } catch (error) {
             console.error(error);
@@ -3054,6 +3335,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshInventory(),
         refreshMacroStatus(),
         refreshControlPlane(),
+        refreshDistillerStatus(),
         refreshSessions(),
         refreshTurns(),
         refreshDispatches(),
