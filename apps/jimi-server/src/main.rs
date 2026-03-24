@@ -206,7 +206,11 @@ struct MarketplaceStatusResponse {
     total_entries: usize,
     installable_entries: usize,
     trusted_entries: usize,
+    total_imports: usize,
+    total_exports: usize,
     entries: Vec<CapsulePackageRecord>,
+    recent_imports: Vec<CapsuleImportRecord>,
+    recent_exports: Vec<CapsuleExportRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3324,12 +3328,32 @@ async fn marketplace_status(State(state): State<AppState>) -> Json<MarketplaceSt
                 || package.trust_level.eq_ignore_ascii_case("trusted")
         })
         .count();
+    let recent_imports = runtime
+        .capsule_imports
+        .all()
+        .into_iter()
+        .rev()
+        .take(4)
+        .cloned()
+        .collect::<Vec<_>>();
+    let recent_exports = runtime
+        .capsule_exports
+        .all()
+        .into_iter()
+        .rev()
+        .take(4)
+        .cloned()
+        .collect::<Vec<_>>();
 
     Json(MarketplaceStatusResponse {
         total_entries: entries.len(),
         installable_entries,
         trusted_entries,
+        total_imports: runtime.capsule_imports.all().len(),
+        total_exports: runtime.capsule_exports.all().len(),
         entries,
+        recent_imports,
+        recent_exports,
     })
 }
 
@@ -5344,12 +5368,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const marketplace = state.marketplaceStatus;
         const entries = marketplace.entries || [];
+        const recentImports = marketplace.recent_imports || [];
+        const recentExports = marketplace.recent_exports || [];
         marketplaceViewEl.innerHTML = `
           <div class="card">
             <strong>Marketplace Shell</strong>
             <div class="meta">entries: ${escapeHtml(marketplace.total_entries ?? 0)}</div>
             <div class="meta">installable: ${escapeHtml(marketplace.installable_entries ?? 0)}</div>
             <div class="meta">trusted: ${escapeHtml(marketplace.trusted_entries ?? 0)}</div>
+            <div class="meta">imports: ${escapeHtml(marketplace.total_imports ?? 0)}</div>
+            <div class="meta">exports: ${escapeHtml(marketplace.total_exports ?? 0)}</div>
           </div>
           ${entries.length ? entries.map(entry => `
             <div class="card">
@@ -5367,6 +5395,22 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               </div>
             </div>
           `).join('') : '<div class="empty">No marketplace entries yet.</div>'}
+          ${recentImports.length ? `
+            <div class="card">
+              <strong>Recent Imports</strong>
+              ${recentImports.map(item => `
+                <div class="meta">${escapeHtml(item.package_id)} <- ${escapeHtml(item.source_origin)} (${escapeHtml(item.import_status)})</div>
+              `).join('')}
+            </div>
+          ` : '<div class="empty">No capsule imports recorded yet.</div>'}
+          ${recentExports.length ? `
+            <div class="card">
+              <strong>Recent Exports</strong>
+              ${recentExports.map(item => `
+                <div class="meta">${escapeHtml(item.package_id)} -> ${escapeHtml(item.target_path)} (${escapeHtml(item.export_status)})</div>
+              `).join('')}
+            </div>
+          ` : '<div class="empty">No capsule exports recorded yet.</div>'}
         `;
       }
 
