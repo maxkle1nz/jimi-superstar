@@ -11,10 +11,15 @@ use axum::{
     },
     http::StatusCode,
     response::Html,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
-use jimi_kernel::{DurableStore, EventEnvelope, HouseInventory, HouseRuntime, SessionRecord};
+use jimi_kernel::{
+    ActorRef, DurableStore, EventEnvelope, EventType, HouseInventory, HouseRuntime,
+    MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
+    MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
+    MandalaSelf, MandalaStableMemory, SessionRecord, SlotBindingState, SubjectRef,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -43,6 +48,14 @@ struct InventoryResponse {
     slots: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct CapsuleBootstrapResponse {
+    mandala_id: String,
+    capsule_id: String,
+    slot_id: String,
+    slot_state: SlotBindingState,
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("JIMI_DB_PATH")
@@ -65,6 +78,10 @@ async fn main() {
         .route("/", get(cockpit))
         .route("/health", get(health))
         .route("/sessions", get(list_sessions).post(create_session))
+        .route("/mandalas", get(list_mandalas))
+        .route("/capsules", get(list_capsules))
+        .route("/slots", get(list_slots))
+        .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/events", get(list_events))
         .route("/ws/events", get(ws_events))
         .route("/inventory", get(inventory))
@@ -128,6 +145,21 @@ async fn list_events(State(state): State<AppState>) -> Json<Vec<EventEnvelope>> 
     Json(runtime.events.all().to_vec())
 }
 
+async fn list_mandalas(State(state): State<AppState>) -> Json<Vec<MandalaManifest>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.mandalas.all().into_iter().cloned().collect())
+}
+
+async fn list_capsules(State(state): State<AppState>) -> Json<Vec<jimi_kernel::CapsuleRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.capsules.all().into_iter().cloned().collect())
+}
+
+async fn list_slots(State(state): State<AppState>) -> Json<Vec<jimi_kernel::PersonalitySlot>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.slots.all().into_iter().cloned().collect())
+}
+
 async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(InventoryResponse {
@@ -145,6 +177,123 @@ async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
             .map(|slot| slot.slot_id.clone())
             .collect(),
     })
+}
+
+async fn bootstrap_core_capsule(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleBootstrapResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+    let mandala_id = "jimi.superstar.core".to_string();
+    let capsule_id = "capsule.jimi.superstar.core.v1".to_string();
+    let slot_id = "slot.jimi.superstar.primary".to_string();
+
+    if runtime.mandalas.get(&mandala_id).is_err() {
+        runtime.mandalas.install(sample_core_mandala());
+        runtime.events.append(
+            ActorRef {
+                actor_type: "operator".into(),
+                actor_id: "cockpit.bootstrap".into(),
+            },
+            SubjectRef {
+                subject_type: "mandala".into(),
+                subject_id: mandala_id.clone(),
+            },
+            EventType::MandalaBound,
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "mandala_id": mandala_id.clone(),
+                "projection_kind": "role-overlay",
+                "source": "cockpit_bootstrap",
+            }),
+        );
+    }
+
+    if runtime.capsules.get(&capsule_id).is_err() {
+        runtime
+            .capsules
+            .install(capsule_id.clone(), mandala_id.clone(), 1, "house.bootstrap");
+        runtime.events.append(
+            ActorRef {
+                actor_type: "operator".into(),
+                actor_id: "cockpit.bootstrap".into(),
+            },
+            SubjectRef {
+                subject_type: "capsule".into(),
+                subject_id: capsule_id.clone(),
+            },
+            EventType::CapsuleInstalled,
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "capsule_id": capsule_id.clone(),
+                "mandala_id": mandala_id.clone(),
+                "version": 1,
+                "install_source": "house.bootstrap",
+            }),
+        );
+    }
+
+    if runtime.slots.get(&slot_id).is_err() {
+        runtime
+            .slots
+            .define_slot(slot_id.clone(), "Primary Guardian Slot");
+    }
+
+    runtime
+        .slots
+        .bind_capsule(&slot_id, capsule_id.clone(), mandala_id.clone(), false)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    runtime
+        .slots
+        .activate(&slot_id)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "slot".into(),
+            subject_id: slot_id.clone(),
+        },
+        EventType::SlotActivated,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "slot_id": slot_id.clone(),
+            "capsule_id": capsule_id.clone(),
+            "mandala_id": mandala_id.clone(),
+            "state": "active",
+        }),
+    );
+
+    let slot = runtime
+        .slots
+        .get(&slot_id)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .clone();
+    let new_events: Vec<EventEnvelope> = runtime.events.all().iter().rev().take(4).cloned().collect();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    for event in new_events.into_iter().rev() {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CapsuleBootstrapResponse {
+            mandala_id,
+            capsule_id,
+            slot_id,
+            slot_state: slot.state,
+        }),
+    ))
 }
 
 async fn ws_events(
@@ -197,6 +346,81 @@ async fn handle_ws_events(mut socket: WebSocket, state: AppState) {
 async fn send_event(socket: &mut WebSocket, event: &EventEnvelope) -> Result<(), ()> {
     let payload = serde_json::to_string(event).map_err(|_| ())?;
     socket.send(Message::Text(payload.into())).await.map_err(|_| ())
+}
+
+fn sample_core_mandala() -> MandalaManifest {
+    MandalaManifest {
+        manifest_version: "mandala/v1".into(),
+        kind: "mandala".into(),
+        generated_at: 1_774_771_200.0,
+        agent_version: 1,
+        self_section: MandalaSelf {
+            id: "jimi.superstar.core".into(),
+            role: "guardian".into(),
+            template_soul: "jimi-superstar".into(),
+            execution_role: Some("house-conductor".into()),
+            specialization: Some("sovereign-agent-house".into()),
+            tone: Some("warm-precise".into()),
+            canonical: true,
+            boundaries: Default::default(),
+            tags: vec!["core".into(), "guardian".into(), "retrobuilder".into()],
+        },
+        execution_policy: MandalaExecutionPolicy {
+            body: "Protect the house, narrate the build, and keep contracts ahead of improvisation."
+                .into(),
+            execution_lane: "main".into(),
+            preferred_provider: "codex".into(),
+            preferred_model: "gpt-5".into(),
+            reasoning_effort: Some("high".into()),
+            use_session_pool: false,
+            allow_provider_override: true,
+            capabilities: vec![
+                "tool.exec.bash".into(),
+                "tool.http".into(),
+                "tool.ws".into(),
+                "memory.runtime".into(),
+            ],
+        },
+        capability_policy: MandalaCapabilityPolicy {
+            declared: vec![
+                "skill.import".into(),
+                "capsule.install".into(),
+                "slot.activate".into(),
+                "event.stream".into(),
+            ],
+            required: vec!["tool.exec.bash".into(), "memory.runtime".into()],
+            optional: vec!["provider.codex".into(), "provider.claude".into()],
+        },
+        memory_policy: MandalaMemoryPolicy::default(),
+        stable_memory: MandalaStableMemory::default(),
+        active_snapshot: MandalaActiveSnapshot {
+            current_goal: "Bootstrap the first sovereign cockpit loop.".into(),
+            active_decisions: vec!["Mandalas are canonical saves.".into()],
+            blockers: Vec::new(),
+            next_actions: vec![
+                "Expose capsule installation in the cockpit.".into(),
+                "Add provider lanes after slot management.".into(),
+            ],
+            hot_context: vec!["RETROBUILDER".into(), "FieldVault".into()],
+            snapshot: Default::default(),
+        },
+        refs: MandalaRefs::default(),
+        projection: MandalaProjection {
+            projection_kind: "role-overlay".into(),
+            requested_role: "guardian".into(),
+            template_soul: "jimi-superstar".into(),
+            execution_role: Some("house-conductor".into()),
+            default_body:
+                "Protect the sovereign agent house and keep the build grounded.".into(),
+            lineage: vec!["jimi".into(), "guardian".into()],
+            autoevolve: true,
+        },
+        ownership: None,
+        capsule_contract: Some(MandalaCapsuleContract::default()),
+        skill_packs: Vec::new(),
+        sacred_shards: Vec::new(),
+        metadata: Default::default(),
+    }
 }
 
 const COCKPIT_HTML: &str = r#"<!doctype html>
@@ -264,6 +488,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         grid-template-columns: 1.2fr 0.8fr;
         gap: 20px;
       }
+      .stack {
+        display: grid;
+        gap: 20px;
+      }
       .panel {
         background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), var(--panel);
         border: 1px solid var(--line);
@@ -302,6 +530,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         display: flex;
         gap: 10px;
         margin: 16px 0 8px;
+      }
+      .action-row {
+        display: flex;
+        gap: 10px;
+        margin: 12px 0 4px;
+        flex-wrap: wrap;
       }
       input, button {
         font: inherit;
@@ -396,13 +630,26 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       </div>
 
       <div class="grid">
-        <div class="panel">
-          <h2>Sessions</h2>
-          <form class="session-form" id="session-form">
-            <input id="session-title" placeholder="Name a new room or mission" value="Boot the next JIMI lane" />
-            <button type="submit">Create Session</button>
-          </form>
-          <div class="list" id="session-list"></div>
+        <div class="stack">
+          <div class="panel">
+            <h2>Sessions</h2>
+            <form class="session-form" id="session-form">
+              <input id="session-title" placeholder="Name a new room or mission" value="Boot the next JIMI lane" />
+              <button type="submit">Create Session</button>
+            </form>
+            <div class="list" id="session-list"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Capsule Core</h2>
+            <div class="small">Install the first canonical JIMI capsule and bind it to the primary personality slot.</div>
+            <div class="action-row">
+              <button id="bootstrap-core">Install Core Capsule</button>
+              <div class="small" id="bootstrap-status">awaiting bootstrap</div>
+            </div>
+            <div class="list" id="capsule-list"></div>
+            <div class="list" id="slot-list"></div>
+          </div>
         </div>
 
         <div class="panel">
@@ -419,10 +666,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const wsStatusEl = document.getElementById('ws-status');
       const sessionFormEl = document.getElementById('session-form');
       const sessionTitleEl = document.getElementById('session-title');
+      const capsuleListEl = document.getElementById('capsule-list');
+      const slotListEl = document.getElementById('slot-list');
+      const bootstrapButtonEl = document.getElementById('bootstrap-core');
+      const bootstrapStatusEl = document.getElementById('bootstrap-status');
 
       const state = {
         sessions: [],
-        events: []
+        events: [],
+        capsules: [],
+        slots: []
       };
 
       function renderInventory(data) {
@@ -474,6 +727,37 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         `).join('');
       }
 
+      function renderCapsules() {
+        if (!state.capsules.length) {
+          capsuleListEl.innerHTML = '<div class="empty">No capsules installed yet.</div>';
+        } else {
+          capsuleListEl.innerHTML = state.capsules.map(capsule => `
+            <div class="card">
+              <strong>${escapeHtml(capsule.capsule_id)}</strong>
+              <div class="meta">mandala: ${escapeHtml(capsule.mandala_id)}</div>
+              <div class="meta">version: ${escapeHtml(capsule.version)}</div>
+              <div class="meta">source: ${escapeHtml(capsule.install_source)}</div>
+            </div>
+          `).join('');
+        }
+      }
+
+      function renderSlots() {
+        if (!state.slots.length) {
+          slotListEl.innerHTML = '<div class="empty">No personality slots yet.</div>';
+          return;
+        }
+        slotListEl.innerHTML = state.slots.map(slot => `
+          <div class="card">
+            <strong>${escapeHtml(slot.label)}</strong>
+            <div class="meta">slot: ${escapeHtml(slot.slot_id)}</div>
+            <div class="meta">state: ${escapeHtml(slot.state)}</div>
+            <div class="meta">capsule: ${escapeHtml(slot.capsule_id || 'none')}</div>
+            <div class="meta">mandala: ${escapeHtml(slot.active_mandala_id || 'none')}</div>
+          </div>
+        `).join('');
+      }
+
       async function refreshInventory() {
         const res = await fetch('/inventory');
         const data = await res.json();
@@ -484,6 +768,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const res = await fetch('/sessions');
         state.sessions = await res.json();
         renderSessions();
+      }
+
+      async function refreshCapsules() {
+        const res = await fetch('/capsules');
+        state.capsules = await res.json();
+        renderCapsules();
+      }
+
+      async function refreshSlots() {
+        const res = await fetch('/slots');
+        state.slots = await res.json();
+        renderSlots();
       }
 
       async function refreshEvents() {
@@ -507,6 +803,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await refreshInventory();
       }
 
+      async function bootstrapCoreCapsule() {
+        bootstrapStatusEl.textContent = 'installing core capsule…';
+        const res = await fetch('/bootstrap/core-capsule', { method: 'POST' });
+        if (!res.ok) {
+          bootstrapStatusEl.textContent = 'bootstrap failed';
+          throw new Error('failed to bootstrap core capsule');
+        }
+        const result = await res.json();
+        bootstrapStatusEl.textContent = `${result.slot_id} -> ${result.slot_state}`;
+        await Promise.all([refreshInventory(), refreshCapsules(), refreshSlots(), refreshEvents()]);
+      }
+
       function connectEvents() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${location.host}/ws/events`);
@@ -521,6 +829,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             if (event.event_type === 'session_created') {
               refreshSessions().catch(console.error);
               refreshInventory().catch(console.error);
+            } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
+              refreshInventory().catch(console.error);
+              refreshCapsules().catch(console.error);
+              refreshSlots().catch(console.error);
             }
           } catch (error) {
             console.error(error);
@@ -551,6 +863,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
       });
 
+      bootstrapButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapCoreCapsule();
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replaceAll('&', '&amp;')
@@ -560,7 +880,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           .replaceAll("'", '&#39;');
       }
 
-      Promise.all([refreshInventory(), refreshSessions(), refreshEvents()])
+      Promise.all([
+        refreshInventory(),
+        refreshSessions(),
+        refreshCapsules(),
+        refreshSlots(),
+        refreshEvents()
+      ])
         .then(connectEvents)
         .catch(console.error);
     </script>
