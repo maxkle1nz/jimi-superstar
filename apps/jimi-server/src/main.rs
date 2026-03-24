@@ -26,7 +26,7 @@ use jimi_kernel::{
     MandalaCapsuleContract, MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy,
     MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
     CapsulePackageRecord, MemoryCapsuleRecord, MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel,
-    SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
+    SessionId, SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
     TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord, WorldStateRelationRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
@@ -299,6 +299,12 @@ struct UpdateCapsuleTrustRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct CapsuleInstallRequestResponse {
+    package: CapsulePackageRecord,
+    approval: ApprovalRequestRecord,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryPolicyUpdateResponse {
     mandala_id: String,
     memory_policy: MandalaMemoryPolicy,
@@ -426,28 +432,32 @@ async fn main() {
             get(list_resynthesis_triggers),
         )
         .route("/memory/promotions", get(list_memory_promotions))
-        .route("/memory/query/:session_id", get(query_memory))
+        .route("/memory/query/{session_id}", get(query_memory))
         .route("/memory/search", get(search_memory))
-        .route("/context-packet/:session_id", get(context_packet))
+        .route("/context-packet/{session_id}", get(context_packet))
         .route("/mandalas", get(list_mandalas))
         .route(
-            "/mandalas/:mandala_id/memory-policy",
+            "/mandalas/{mandala_id}/memory-policy",
             post(update_mandala_memory_policy),
         )
         .route("/capsules", get(list_capsules))
         .route("/capsule-packages", get(list_capsule_packages))
         .route(
-            "/capsule-packages/:package_id/preview",
+            "/capsule-packages/{package_id}/preview",
             get(capsule_package_preview),
         )
         .route(
-            "/capsule-packages/:package_id/trust",
+            "/capsule-packages/{package_id}/trust",
             post(update_capsule_trust),
+        )
+        .route(
+            "/capsule-packages/{package_id}/install-request",
+            post(request_capsule_install),
         )
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
         .route("/providers", get(list_providers))
-        .route("/providers/:provider_lane_id", post(update_provider_lane))
+        .route("/providers/{provider_lane_id}", post(update_provider_lane))
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
@@ -459,8 +469,8 @@ async fn main() {
         .route("/status/autonomy", get(autonomy_status))
         .route("/autonomy", post(set_autonomy))
         .route("/approvals", get(list_approvals))
-        .route("/approvals/:approval_id/grant", post(grant_approval))
-        .route("/approvals/:approval_id/deny", post(deny_approval))
+        .route("/approvals/{approval_id}/grant", post(grant_approval))
+        .route("/approvals/{approval_id}/deny", post(deny_approval))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
@@ -2389,6 +2399,101 @@ async fn update_capsule_trust(
     Ok(Json(updated))
 }
 
+async fn request_capsule_install(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleInstallRequestResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    if package.install_status == "installed" {
+        return Err((
+            StatusCode::CONFLICT,
+            "package is already installed in the house".to_string(),
+        ));
+    }
+
+    let synthetic_session_id = SessionId(format!("session.package.{}", package.package_id));
+    let synthetic_dispatch_id = format!("capsule_install::{}", package.package_id);
+    let synthetic_lane_id = "provider.none.marketplace".to_string();
+
+    if let Some(existing) = runtime
+        .approvals
+        .find_pending_by_dispatch(&synthetic_dispatch_id)
+        .cloned()
+    {
+        return Ok((
+            StatusCode::OK,
+            Json(CapsuleInstallRequestResponse {
+                package,
+                approval: existing,
+            }),
+        ));
+    }
+
+    let status = if package.trust_level.eq_ignore_ascii_case("internal") {
+        "install_ready"
+    } else {
+        "awaiting_approval"
+    };
+    let updated_package = runtime
+        .capsule_packages
+        .update_install_status(&package_id, status)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+
+    let approval = runtime.approvals.request(
+        synthetic_session_id.clone(),
+        synthetic_dispatch_id.clone(),
+        synthetic_lane_id,
+        format!("install_capsule_package:{}", package.package_id),
+        format!(
+            "install {} from {} with trust {}",
+            package.display_name, package.source_origin, package.trust_level
+        ),
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.capsules".into(),
+        },
+        SubjectRef {
+            subject_type: "capsule_package".into(),
+            subject_id: package.package_id.clone(),
+        },
+        EventType::ApprovalRequired,
+        Some(&synthetic_session_id),
+        None,
+        None,
+        serde_json::json!({
+            "approval_request_id": approval.approval_request_id,
+            "package_id": package.package_id,
+            "capsule_id": package.capsule_id,
+            "trust_level": package.trust_level,
+            "change_kind": "install_requested",
+            "install_status": updated_package.install_status,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CapsuleInstallRequestResponse {
+            package: updated_package,
+            approval,
+        }),
+    ))
+}
+
 async fn list_slots(State(state): State<AppState>) -> Json<Vec<jimi_kernel::PersonalitySlot>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.slots.all().into_iter().cloned().collect())
@@ -2754,7 +2859,13 @@ async fn grant_approval(
         .grant(&approval_id)
         .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
 
-    if let Ok(dispatch) = runtime.dispatches.update_status(&approval.dispatch_id, "queued") {
+    if approval.action.starts_with("install_capsule_package:") {
+        if let Some(package_id) = approval.action.split(':').nth(1) {
+            let _ = runtime
+                .capsule_packages
+                .update_install_status(package_id, "approved_for_install");
+        }
+    } else if let Ok(dispatch) = runtime.dispatches.update_status(&approval.dispatch_id, "queued") {
         let _ = runtime
             .sessions
             .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Queued);
@@ -2809,7 +2920,13 @@ async fn deny_approval(
         .deny(&approval_id)
         .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
 
-    if let Ok(dispatch) = runtime.dispatches.update_status(&approval.dispatch_id, "denied") {
+    if approval.action.starts_with("install_capsule_package:") {
+        if let Some(package_id) = approval.action.split(':').nth(1) {
+            let _ = runtime
+                .capsule_packages
+                .update_install_status(package_id, "install_denied");
+        }
+    } else if let Ok(dispatch) = runtime.dispatches.update_status(&approval.dispatch_id, "denied") {
         let _ = runtime
             .sessions
             .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Interrupted);
@@ -5006,11 +5123,15 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <strong>Install Preview / ${escapeHtml(preview.package?.display_name || preview.package?.package_id || 'unknown')}</strong>
             <div class="meta">package: ${escapeHtml(preview.package?.package_id || 'unknown')}</div>
             <div class="meta">trust: ${escapeHtml(preview.package?.trust_level || 'unknown')}</div>
+            <div class="meta">install status: ${escapeHtml(preview.package?.install_status || 'unknown')}</div>
             <div class="meta">slot recommendation: ${escapeHtml(preview.slot_recommendation || 'none')}</div>
             <div class="meta">fieldvault requirements: ${escapeHtml(preview.fieldvault_requirements ?? 0)}</div>
             <div class="meta">required caps: ${escapeHtml((preview.required_capabilities || []).join(' | ') || 'none')}</div>
             <div class="meta">optional caps: ${escapeHtml((preview.optional_capabilities || []).join(' | ') || 'none')}</div>
             <div class="meta">${escapeHtml(preview.install_preview_summary || 'no summary')}</div>
+            <div class="actions">
+              <button onclick="requestCapsuleInstall('${escapeHtml(preview.package?.package_id || '')}')">Request Install</button>
+            </div>
           </div>
         `;
       }
@@ -5328,6 +5449,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           throw new Error('failed to grant approval');
         }
         await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
@@ -5346,6 +5469,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           throw new Error('failed to deny approval');
         }
         await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
@@ -5512,6 +5637,27 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function requestCapsuleInstall(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for install request');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/install-request`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to request capsule install');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshApprovals(),
+          refreshInventory(),
+          refreshMacroStatus(),
           refreshEvents()
         ]);
         await previewCapsulePackage(packageId);
