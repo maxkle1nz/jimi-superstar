@@ -8,6 +8,7 @@ use std::{
 };
 
 mod provider_adapter;
+mod provider_auth;
 
 use axum::{
     Json, Router,
@@ -29,6 +30,7 @@ use jimi_kernel::{
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 use provider_adapter::{provider_adapter_label, resolve_provider_adapter, run_provider_adapter};
+use provider_auth::{detect_provider_credentials, ProviderCredentialStatus};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
@@ -166,6 +168,11 @@ struct SecurityStatusResponse {
     skill_packs: usize,
     artifacts_total: usize,
     artifact_seal_levels: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderReadinessResponse {
+    providers: Vec<ProviderCredentialStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -350,6 +357,7 @@ async fn main() {
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
+        .route("/status/provider-readiness", get(provider_readiness_status))
         .route("/status/world-state", get(world_state_status))
         .route("/status/distiller", get(distiller_status))
         .route("/status/autonomy", get(autonomy_status))
@@ -1759,6 +1767,12 @@ async fn security_status(State(state): State<AppState>) -> Json<SecurityStatusRe
     })
 }
 
+async fn provider_readiness_status() -> Json<ProviderReadinessResponse> {
+    Json(ProviderReadinessResponse {
+        providers: detect_provider_credentials(),
+    })
+}
+
 fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
     let runtime_percent = if inventory.sessions > 0 && inventory.events > 0 {
         82
@@ -3107,6 +3121,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Provider Readiness</h2>
+            <div class="small">Credential and adapter readiness transplanted from Maestro Auth Truth.</div>
+            <div class="list" id="provider-readiness-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Transcript Distiller</h2>
             <div class="small">Background worker for transcript-to-capsule distillation.</div>
             <div class="list" id="distiller-status-view"></div>
@@ -3214,6 +3234,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const macroStatusViewEl = document.getElementById('macro-status-view');
       const macroMenuViewEl = document.getElementById('macro-menu-view');
       const controlPlaneViewEl = document.getElementById('control-plane-view');
+      const providerReadinessViewEl = document.getElementById('provider-readiness-view');
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const securityStatusViewEl = document.getElementById('security-status-view');
       const worldStateViewEl = document.getElementById('world-state-view');
@@ -3250,6 +3271,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         providers: [],
         macroStatus: null,
         controlPlane: null,
+        providerReadiness: null,
         distillerStatus: null,
         securityStatus: null,
         worldState: null,
@@ -3342,6 +3364,21 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">status: ${escapeHtml(section.status)}</div>
             <div class="meta">priority: ${escapeHtml(section.priority)}</div>
             <div class="meta">${escapeHtml(section.summary)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderProviderReadiness() {
+        if (!state.providerReadiness) {
+          providerReadinessViewEl.innerHTML = '<div class="empty">Provider readiness not loaded yet.</div>';
+          return;
+        }
+        providerReadinessViewEl.innerHTML = (state.providerReadiness.providers || []).map(provider => `
+          <div class="card">
+            <strong>${escapeHtml(provider.provider)}</strong>
+            <div class="meta">ready: ${escapeHtml(provider.ready ? 'yes' : 'no')}</div>
+            <div class="meta">source: ${escapeHtml(provider.source)}</div>
+            <div class="meta">${escapeHtml(provider.details)}</div>
           </div>
         `).join('');
       }
@@ -3595,6 +3632,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           providerListEl.innerHTML = '<div class="empty">No provider lanes connected yet.</div>';
           return;
         }
+        const readinessMap = new Map((state.providerReadiness?.providers || []).map(provider => [provider.provider, provider]));
         providerListEl.innerHTML = state.providers.map(provider => `
           <div class="card">
             <strong>${escapeHtml(provider.provider_lane_id)}</strong>
@@ -3602,6 +3640,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">model: ${escapeHtml(provider.model)}</div>
             <div class="meta">routing: ${escapeHtml(provider.routing_mode)}</div>
             <div class="meta">status: ${escapeHtml(provider.status)}</div>
+            <div class="meta">ready: ${escapeHtml(readinessMap.get(provider.provider)?.ready ? 'yes' : 'no')}</div>
+            <div class="meta">auth source: ${escapeHtml(readinessMap.get(provider.provider)?.source || 'unknown')}</div>
           </div>
         `).join('');
       }
@@ -3798,6 +3838,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderControlPlane();
       }
 
+      async function refreshProviderReadiness() {
+        const res = await fetch('/status/provider-readiness');
+        state.providerReadiness = await res.json();
+        renderProviderReadiness();
+      }
+
       async function refreshDistillerStatus() {
         const res = await fetch('/status/distiller');
         state.distillerStatus = await res.json();
@@ -3880,6 +3926,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshProviderReadiness(),
           refreshSecurityStatus(),
           refreshWorldState(),
           refreshAutonomyStatus(),
@@ -3986,7 +4033,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -4013,6 +4060,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
           refreshWorldState(),
@@ -4039,6 +4087,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
           refreshWorldState(),
@@ -4065,6 +4114,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
           refreshWorldState(),
@@ -4092,6 +4142,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
           refreshWorldState(),
@@ -4112,7 +4163,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -4124,7 +4175,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       async function bootstrapAnthropicLane() {
@@ -4136,7 +4187,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerSecondaryStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -4155,6 +4206,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4164,6 +4216,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4177,6 +4230,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4191,6 +4245,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4202,6 +4257,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4212,6 +4268,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4221,6 +4278,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4231,6 +4289,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
               refreshWorldState().catch(console.error);
@@ -4376,6 +4435,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshInventory(),
         refreshMacroStatus(),
         refreshControlPlane(),
+        refreshProviderReadiness(),
         refreshDistillerStatus(),
         refreshSecurityStatus(),
         refreshWorldState(),
