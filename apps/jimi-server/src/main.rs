@@ -124,6 +124,22 @@ struct DistillerStatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct SecurityStatusResponse {
+    active_mandala_id: Option<String>,
+    preferred_provider: Option<String>,
+    preferred_model: Option<String>,
+    sealing_enabled: bool,
+    seal_privacy_classes: Vec<String>,
+    capability_declared: usize,
+    capability_required: usize,
+    capability_optional: usize,
+    sacred_shards: usize,
+    skill_packs: usize,
+    artifacts_total: usize,
+    artifact_seal_levels: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct MemorySearchResponse {
     scope: String,
     query: String,
@@ -278,6 +294,7 @@ async fn main() {
         .route("/providers", get(list_providers))
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
+        .route("/status/security", get(security_status))
         .route("/status/distiller", get(distiller_status))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
@@ -1378,6 +1395,53 @@ async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatus
     })
 }
 
+async fn security_status(State(state): State<AppState>) -> Json<SecurityStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let active_mandala = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find_map(|slot| slot.active_mandala_id.as_ref())
+        .and_then(|mandala_id| runtime.mandalas.get(mandala_id).ok());
+    let artifact_seal_levels = runtime
+        .fieldvault
+        .all()
+        .into_iter()
+        .map(|artifact| format!("{:?}", artifact.seal_level))
+        .collect::<Vec<_>>();
+
+    Json(SecurityStatusResponse {
+        active_mandala_id: active_mandala.map(|mandala| mandala.self_section.id.clone()),
+        preferred_provider: active_mandala
+            .map(|mandala| mandala.execution_policy.preferred_provider.clone()),
+        preferred_model: active_mandala
+            .map(|mandala| mandala.execution_policy.preferred_model.clone()),
+        sealing_enabled: active_mandala
+            .map(|mandala| mandala.memory_policy.allow_fieldvault_sealing)
+            .unwrap_or(false),
+        seal_privacy_classes: active_mandala
+            .map(|mandala| mandala.memory_policy.seal_privacy_classes.clone())
+            .unwrap_or_default(),
+        capability_declared: active_mandala
+            .map(|mandala| mandala.capability_policy.declared.len())
+            .unwrap_or(0),
+        capability_required: active_mandala
+            .map(|mandala| mandala.capability_policy.required.len())
+            .unwrap_or(0),
+        capability_optional: active_mandala
+            .map(|mandala| mandala.capability_policy.optional.len())
+            .unwrap_or(0),
+        sacred_shards: active_mandala
+            .map(|mandala| mandala.sacred_shards.len())
+            .unwrap_or(0),
+        skill_packs: active_mandala
+            .map(|mandala| mandala.skill_packs.len())
+            .unwrap_or(0),
+        artifacts_total: runtime.fieldvault.all().len(),
+        artifact_seal_levels,
+    })
+}
+
 fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
     let runtime_percent = if inventory.sessions > 0 && inventory.events > 0 {
         82
@@ -1470,10 +1534,10 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             },
             MacroAxisStatus {
                 label: "SECURITY",
-                percent: 34,
+                percent: 46,
                 phase: "baseline",
-                summary: "policy model present, hardening ahead",
-                steps_remaining: 8,
+                summary: "policy baseline live, approvals and hardening ahead",
+                steps_remaining: 7,
             },
         ],
         done: vec![
@@ -1588,9 +1652,13 @@ fn build_control_plane_status(inventory: &HouseInventory) -> ControlPlaneRespons
             },
             ControlPlaneSection {
                 label: "Security Surface",
-                status: "planned",
+                status: if inventory.fieldvault_artifacts > 0 {
+                    "partial"
+                } else {
+                    "baseline"
+                },
                 priority: "medium",
-                summary: "policy is modeled in specs; dedicated approval and security controls still need a UI surface",
+                summary: "policy baseline, sealing posture, and capability counts are now visible; approvals still need a dedicated surface",
             },
             ControlPlaneSection {
                 label: "Workflow Composer",
@@ -2518,6 +2586,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Security Surface</h2>
+            <div class="small">Active policy, sealing posture, and capability baseline for the house.</div>
+            <div class="list" id="security-status-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>Capsule Memory</h2>
             <div class="small" id="context-status">awaiting context packet</div>
             <form class="session-form" id="memory-search-form">
@@ -2596,6 +2670,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const macroMenuViewEl = document.getElementById('macro-menu-view');
       const controlPlaneViewEl = document.getElementById('control-plane-view');
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
+      const securityStatusViewEl = document.getElementById('security-status-view');
       const memoryPolicyFormEl = document.getElementById('memory-policy-form');
       const hotLimitEl = document.getElementById('hot-limit');
       const relevantLimitEl = document.getElementById('relevant-limit');
@@ -2623,6 +2698,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         macroStatus: null,
         controlPlane: null,
         distillerStatus: null,
+        securityStatus: null,
         memorySearch: null
       };
 
@@ -2729,6 +2805,31 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">processed: ${escapeHtml(status.processed)}</div>
             <div class="meta">failed: ${escapeHtml(status.failed)}</div>
             <div class="meta">last error: ${escapeHtml(status.last_error || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderSecurityStatus() {
+        if (!state.securityStatus) {
+          securityStatusViewEl.innerHTML = '<div class="empty">Security surface not loaded yet.</div>';
+          return;
+        }
+        const security = state.securityStatus;
+        securityStatusViewEl.innerHTML = `
+          <div class="card">
+            <strong>Policy Baseline</strong>
+            <div class="meta">active mandala: ${escapeHtml(security.active_mandala_id || 'none')}</div>
+            <div class="meta">preferred provider: ${escapeHtml(security.preferred_provider || 'none')}</div>
+            <div class="meta">preferred model: ${escapeHtml(security.preferred_model || 'none')}</div>
+            <div class="meta">fieldvault sealing: ${escapeHtml(security.sealing_enabled ? 'on' : 'off')}</div>
+            <div class="meta">seal classes: ${escapeHtml((security.seal_privacy_classes || []).join(' | ') || 'none')}</div>
+            <div class="meta">declared capabilities: ${escapeHtml(security.capability_declared)}</div>
+            <div class="meta">required capabilities: ${escapeHtml(security.capability_required)}</div>
+            <div class="meta">optional capabilities: ${escapeHtml(security.capability_optional)}</div>
+            <div class="meta">skill packs: ${escapeHtml(security.skill_packs)}</div>
+            <div class="meta">sacred shards: ${escapeHtml(security.sacred_shards)}</div>
+            <div class="meta">sealed artifacts: ${escapeHtml(security.artifacts_total)}</div>
+            <div class="meta">artifact levels: ${escapeHtml((security.artifact_seal_levels || []).join(' | ') || 'none')}</div>
           </div>
         `;
       }
@@ -3080,6 +3181,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderDistillerStatus();
       }
 
+      async function refreshSecurityStatus() {
+        const res = await fetch('/status/security');
+        state.securityStatus = await res.json();
+        renderSecurityStatus();
+      }
+
       async function searchMemory() {
         const query = memorySearchQueryEl.value.trim();
         const scope = memorySearchScopeEl.value;
@@ -3120,6 +3227,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshControlPlane(),
+          refreshSecurityStatus(),
           refreshContextPacket(),
           refreshEvents()
         ]);
@@ -3223,7 +3331,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshSecurityStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -3251,6 +3359,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMacroStatus(),
           refreshControlPlane(),
           refreshDistillerStatus(),
+          refreshSecurityStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -3274,6 +3383,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMacroStatus(),
           refreshControlPlane(),
           refreshDistillerStatus(),
+          refreshSecurityStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -3294,6 +3404,10 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         executeLiveStatusEl.textContent = `${result.dispatch.provider_lane_id} -> live completed`;
         await Promise.all([
           refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshDistillerStatus(),
+          refreshSecurityStatus(),
           refreshTurns(),
           refreshDispatches(),
           refreshMemoryCapsules(),
@@ -3318,6 +3432,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshMacroStatus(),
           refreshControlPlane(),
           refreshDistillerStatus(),
+          refreshSecurityStatus(),
           refreshMandalas(),
           refreshCapsules(),
           refreshSlots(),
@@ -3334,7 +3449,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -3346,7 +3461,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshDistillerStatus(), refreshSecurityStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -3366,12 +3481,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'turn_started') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshSummaries().catch(console.error);
@@ -3382,6 +3499,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshTurns().catch(console.error);
               refreshDispatches().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -3393,6 +3511,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
               refreshSlots().catch(console.error);
@@ -3401,6 +3520,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshContextPacket().catch(console.error);
             } else if (event.event_type === 'artifact_created') {
@@ -3408,12 +3528,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
             } else if (event.event_type === 'engine_selected') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshProviders().catch(console.error);
               refreshDispatches().catch(console.error);
             } else if (event.event_type === 'truth_fusion_updated') {
@@ -3421,6 +3543,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
               refreshContextPacket().catch(console.error);
             }
@@ -3544,6 +3667,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshMacroStatus(),
         refreshControlPlane(),
         refreshDistillerStatus(),
+        refreshSecurityStatus(),
         refreshSessions(),
         refreshTurns(),
         refreshDispatches(),
