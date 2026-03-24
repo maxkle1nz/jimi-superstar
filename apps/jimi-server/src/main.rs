@@ -5473,6 +5473,45 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         return '[' + '█'.repeat(filled) + '░'.repeat(10 - filled) + ']';
       }
 
+      function packageLifecycleLabel(status) {
+        switch (status) {
+          case 'installed': return 'Installed in house';
+          case 'install_ready': return 'Ready to install';
+          case 'awaiting_approval': return 'Awaiting approval';
+          case 'approved_for_install': return 'Approved for install';
+          case 'available': return 'Available locally';
+          case 'uninstalled': return 'Uninstalled, registry kept';
+          case 'upgrade_ready': return 'Upgrade ready';
+          case 'update_available': return 'Update available';
+          case 'install_denied': return 'Install denied';
+          case 'imported': return 'Imported, not installed';
+          default: return status || 'Unknown';
+        }
+      }
+
+      function packageLifecycleWarning(pkg) {
+        if (!pkg) return 'No package selected.';
+        if (pkg.trust_level && !['internal', 'trusted'].includes(String(pkg.trust_level).toLowerCase())) {
+          return 'This capsule is not yet trusted by the house.';
+        }
+        switch (pkg.install_status) {
+          case 'awaiting_approval':
+            return 'Approval is required before installation can continue.';
+          case 'install_denied':
+            return 'The house denied installation for this package.';
+          case 'approved_for_install':
+            return 'This package is approved and ready for activation.';
+          case 'update_available':
+            return 'A newer package revision exists; review before relying on the active slot.';
+          case 'upgrade_ready':
+            return 'This package can now be upgraded.';
+          case 'uninstalled':
+            return 'The package is no longer installed, but provenance is preserved.';
+          default:
+            return 'No blocking lifecycle warning.';
+        }
+      }
+
       function renderMacroStatus() {
         if (!state.macroStatus) {
           macroStatusViewEl.innerHTML = '<div class="empty">Macro panorama not loaded yet.</div>';
@@ -5637,7 +5676,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <div class="meta">creator: ${escapeHtml(entry.creator)}</div>
               <div class="meta">source: ${escapeHtml(entry.source_origin)}</div>
               <div class="meta">trust: ${escapeHtml(entry.trust_level)}</div>
-              <div class="meta">install status: ${escapeHtml(entry.install_status)}</div>
+              <div class="meta">install status: ${escapeHtml(packageLifecycleLabel(entry.install_status))}</div>
+              <div class="meta">warning: ${escapeHtml(packageLifecycleWarning(entry))}</div>
               <div class="actions">
                 <button onclick="previewCapsulePackage('${escapeHtml(entry.package_id)}')">Preview</button>
                 <button onclick="requestCapsuleInstall('${escapeHtml(entry.package_id)}')">Install</button>
@@ -5915,12 +5955,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <strong>Install Preview / ${escapeHtml(preview.package?.display_name || preview.package?.package_id || 'unknown')}</strong>
             <div class="meta">package: ${escapeHtml(preview.package?.package_id || 'unknown')}</div>
             <div class="meta">trust: ${escapeHtml(preview.package?.trust_level || 'unknown')}</div>
-            <div class="meta">install status: ${escapeHtml(preview.package?.install_status || 'unknown')}</div>
+            <div class="meta">install status: ${escapeHtml(packageLifecycleLabel(preview.package?.install_status))}</div>
             <div class="meta">slot recommendation: ${escapeHtml(preview.slot_recommendation || 'none')}</div>
             <div class="meta">fieldvault requirements: ${escapeHtml(preview.fieldvault_requirements ?? 0)}</div>
             <div class="meta">required caps: ${escapeHtml((preview.required_capabilities || []).join(' | ') || 'none')}</div>
             <div class="meta">optional caps: ${escapeHtml((preview.optional_capabilities || []).join(' | ') || 'none')}</div>
             <div class="meta">${escapeHtml(preview.install_preview_summary || 'no summary')}</div>
+            <div class="meta">warning: ${escapeHtml(packageLifecycleWarning(preview.package))}</div>
             <div class="actions">
               <button onclick="requestCapsuleInstall('${escapeHtml(preview.package?.package_id || '')}')">Request Install</button>
             </div>
