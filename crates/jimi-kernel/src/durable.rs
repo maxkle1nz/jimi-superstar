@@ -5,10 +5,10 @@ use rusqlite::{Connection, params};
 use thiserror::Error;
 
 use crate::{
-    CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
-    LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord, MemoryPromotionRecord,
-    PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord, SessionId, SessionRecord,
-    SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
+    ApprovalRequestRecord, CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime,
+    KernelError, LaneId, LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord,
+    MemoryPromotionRecord, PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord,
+    SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
 };
 
 #[derive(Debug, Error)]
@@ -191,6 +191,18 @@ impl DurableStore {
               promoted_value TEXT NOT NULL,
               confidence_level REAL NOT NULL,
               created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS approval_requests (
+              approval_request_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              dispatch_id TEXT NOT NULL,
+              provider_lane_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              resolved_at TEXT
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_capsules_fts USING fts5(
@@ -514,6 +526,24 @@ impl DurableStore {
                     promotion.promoted_value,
                     promotion.confidence_level,
                     promotion.created_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for approval in runtime.approvals.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO approval_requests (approval_request_id, session_id, dispatch_id, provider_lane_id, action, reason, status, created_at, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    approval.approval_request_id,
+                    approval.session_id.0,
+                    approval.dispatch_id,
+                    approval.provider_lane_id,
+                    approval.action,
+                    approval.reason,
+                    approval.status,
+                    approval.created_at.to_rfc3339(),
+                    approval.resolved_at.map(|dt| dt.to_rfc3339()),
                 ],
             )?;
         }
@@ -1065,6 +1095,51 @@ impl DurableStore {
                         confidence_level,
                         created_at: parse_dt(&created_at)?,
                     });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT approval_request_id, session_id, dispatch_id, provider_lane_id, action, reason, status, created_at, resolved_at FROM approval_requests ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    approval_request_id,
+                    session_id,
+                    dispatch_id,
+                    provider_lane_id,
+                    action,
+                    reason,
+                    status,
+                    created_at,
+                    resolved_at,
+                ) = row?;
+                runtime.approvals.insert_existing(ApprovalRequestRecord {
+                    approval_request_id,
+                    session_id: SessionId(session_id),
+                    dispatch_id,
+                    provider_lane_id,
+                    action,
+                    reason,
+                    status,
+                    created_at: parse_dt(&created_at)?,
+                    resolved_at: resolved_at
+                        .map(|value| parse_dt(&value))
+                        .transpose()?,
+                });
             }
         }
 

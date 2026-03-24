@@ -13,7 +13,7 @@ mod provider_auth;
 use axum::{
     Json, Router,
     extract::{
-        State,
+        Path, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
@@ -21,12 +21,13 @@ use axum::{
     routing::{get, post},
 };
 use jimi_kernel::{
-    ActorRef, DurableStore, EventEnvelope, EventType, FieldVaultArtifact, HouseInventory,
-    HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
-    MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
-    MandalaSelf, MandalaStableMemory, MemoryBridgeRecord, MemoryCapsuleRecord,
-    MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord, SlotBindingState,
-    SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
+    ActorRef, ApprovalRequestRecord, DurableStore, EventEnvelope, EventType, FieldVaultArtifact,
+    HouseInventory, HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy,
+    MandalaCapsuleContract, MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy,
+    MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
+    MemoryCapsuleRecord, MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel,
+    SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
+    TurnRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
 use provider_adapter::{provider_adapter_label, resolve_provider_adapter, run_provider_adapter};
@@ -190,6 +191,19 @@ struct AutonomyStatusResponse {
     cycles: u64,
     completed_dispatches: u64,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApprovalsStatusResponse {
+    pending: usize,
+    granted: usize,
+    denied: usize,
+    approvals: Vec<ApprovalRequestRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApprovalActionResponse {
+    approval: ApprovalRequestRecord,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,11 +371,15 @@ async fn main() {
         .route("/status/macro", get(macro_status))
         .route("/status/control-plane", get(control_plane_status))
         .route("/status/security", get(security_status))
+        .route("/status/approvals", get(approvals_status))
         .route("/status/provider-readiness", get(provider_readiness_status))
         .route("/status/world-state", get(world_state_status))
         .route("/status/distiller", get(distiller_status))
         .route("/status/autonomy", get(autonomy_status))
         .route("/autonomy", post(set_autonomy))
+        .route("/approvals", get(list_approvals))
+        .route("/approvals/:approval_id/grant", post(grant_approval))
+        .route("/approvals/:approval_id/deny", post(deny_approval))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
         .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
@@ -1351,6 +1369,27 @@ async fn execute_latest_dispatch_live(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+fn approval_reason_for_dispatch(
+    provider_lane_id: &str,
+    provider: &str,
+    packet: &ContextPacketResponse,
+) -> Option<String> {
+    if provider != "codex" {
+        return Some(format!(
+            "provider lane {provider_lane_id} uses non-default engine {provider}"
+        ));
+    }
+
+    if packet.world_state_slice.git_dirty {
+        return Some(format!(
+            "workspace is dirty with {} changed files",
+            packet.world_state_slice.changed_files.len()
+        ));
+    }
+
+    None
+}
+
 async fn run_latest_dispatch_live_once(
     state: &AppState,
 ) -> Result<DispatchExecutionResponse, (StatusCode, String)> {
@@ -1424,6 +1463,74 @@ async fn run_latest_dispatch_live_once(
             &packet,
             &running_dispatch.intent_summary,
         );
+
+        if let Some(reason) = approval_reason_for_dispatch(
+            &running_dispatch.provider_lane_id,
+            &provider_lane.provider,
+            &packet,
+        ) {
+            if runtime
+                .approvals
+                .find_pending_by_dispatch(&running_dispatch.dispatch_id)
+                .is_none()
+                && !runtime
+                    .approvals
+                    .has_granted_for_dispatch(&running_dispatch.dispatch_id)
+            {
+                let approval = runtime.approvals.request(
+                    running_dispatch.session_id.clone(),
+                    running_dispatch.dispatch_id.clone(),
+                    running_dispatch.provider_lane_id.clone(),
+                    "execute_dispatch_live",
+                    reason.clone(),
+                );
+
+                runtime
+                    .dispatches
+                    .update_status(&running_dispatch.dispatch_id, "awaiting_approval")
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+                let _ = runtime.sessions.update_turn_state(
+                    &running_dispatch.turn_id,
+                    jimi_kernel::TurnState::AwaitingApproval,
+                );
+
+                runtime.events.append(
+                    ActorRef {
+                        actor_type: "policy".into(),
+                        actor_id: "house.approvals".into(),
+                    },
+                    SubjectRef {
+                        subject_type: "approval".into(),
+                        subject_id: approval.approval_request_id.clone(),
+                    },
+                    EventType::ApprovalRequired,
+                    Some(&running_dispatch.session_id),
+                    Some(&running_dispatch.lane_id),
+                    Some(&running_dispatch.turn_id),
+                    serde_json::json!({
+                        "approval_request_id": approval.approval_request_id,
+                        "dispatch_id": running_dispatch.dispatch_id,
+                        "provider_lane_id": running_dispatch.provider_lane_id,
+                        "action": "execute_dispatch_live",
+                        "reason": reason,
+                        "status": "pending",
+                    }),
+                );
+
+                let new_event = runtime.events.all().last().cloned();
+                persist_runtime(&state, &runtime)?;
+                drop(runtime);
+
+                if let Some(event) = new_event {
+                    let _ = state.events_tx.send(event);
+                }
+
+                return Err((
+                    StatusCode::CONFLICT,
+                    "approval required before live execution".to_string(),
+                ));
+            }
+        }
 
         let new_event = runtime.events.all().last().cloned();
         persist_runtime(&state, &runtime)?;
@@ -1720,6 +1827,123 @@ async fn set_autonomy(
     }))
 }
 
+async fn list_approvals(State(state): State<AppState>) -> Json<Vec<ApprovalRequestRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.approvals.all().into_iter().cloned().collect())
+}
+
+async fn approvals_status(State(state): State<AppState>) -> Json<ApprovalsStatusResponse> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let approvals: Vec<ApprovalRequestRecord> = runtime.approvals.all().into_iter().cloned().collect();
+    let pending = approvals.iter().filter(|approval| approval.status == "pending").count();
+    let granted = approvals.iter().filter(|approval| approval.status == "granted").count();
+    let denied = approvals.iter().filter(|approval| approval.status == "denied").count();
+    Json(ApprovalsStatusResponse {
+        pending,
+        granted,
+        denied,
+        approvals,
+    })
+}
+
+async fn grant_approval(
+    Path(approval_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ApprovalActionResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let approval = runtime
+        .approvals
+        .grant(&approval_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+
+    if let Ok(dispatch) = runtime.dispatches.update_status(&approval.dispatch_id, "queued") {
+        let _ = runtime
+            .sessions
+            .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Queued);
+    }
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.approvals".into(),
+        },
+        SubjectRef {
+            subject_type: "approval".into(),
+            subject_id: approval.approval_request_id.clone(),
+        },
+        EventType::ApprovalGranted,
+        Some(&approval.session_id),
+        None,
+        None,
+        serde_json::json!({
+            "approval_request_id": approval.approval_request_id,
+            "dispatch_id": approval.dispatch_id,
+            "provider_lane_id": approval.provider_lane_id,
+            "action": approval.action,
+            "status": approval.status,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((StatusCode::OK, Json(ApprovalActionResponse { approval })))
+}
+
+async fn deny_approval(
+    Path(approval_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ApprovalActionResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let approval = runtime
+        .approvals
+        .deny(&approval_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+
+    if let Ok(dispatch) = runtime.dispatches.update_status(&approval.dispatch_id, "denied") {
+        let _ = runtime
+            .sessions
+            .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Interrupted);
+    }
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.approvals".into(),
+        },
+        SubjectRef {
+            subject_type: "approval".into(),
+            subject_id: approval.approval_request_id.clone(),
+        },
+        EventType::ApprovalDenied,
+        Some(&approval.session_id),
+        None,
+        None,
+        serde_json::json!({
+            "approval_request_id": approval.approval_request_id,
+            "dispatch_id": approval.dispatch_id,
+            "provider_lane_id": approval.provider_lane_id,
+            "action": approval.action,
+            "status": approval.status,
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((StatusCode::OK, Json(ApprovalActionResponse { approval })))
+}
+
 async fn security_status(State(state): State<AppState>) -> Json<SecurityStatusResponse> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     let active_mandala = runtime
@@ -1804,27 +2028,27 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
     MacroStatusResponse {
         retrobuilder: MacroAxisStatus {
             label: "RETROBUILDER",
-            percent: 94,
+            percent: 96,
             phase: "R4",
             summary: "live loops materializing",
-            steps_remaining: 6,
+            steps_remaining: 3,
         },
         l1ght: MacroAxisStatus {
             label: "L1GHT",
-            percent: 90,
+            percent: 93,
             phase: "L4",
-            summary: "live surfaces",
-            steps_remaining: 5,
+            summary: "live surfaces with approvals and world state",
+            steps_remaining: 3,
         },
         project: MacroAxisStatus {
             label: "PROJECT",
-            percent: 89,
+            percent: 96,
             phase: "operational core",
-            summary: "sovereign house online, ecosystem and hardening ahead",
-            steps_remaining: 22,
+            summary: "multi-engine house online, hardening and ecosystem ahead",
+            steps_remaining: 12,
         },
-        current_phase_steps_remaining: 6,
-        project_steps_remaining: 22,
+        current_phase_steps_remaining: 3,
+        project_steps_remaining: 12,
         subsystems: vec![
             MacroAxisStatus {
                 label: "RUNTIME",
@@ -1856,10 +2080,10 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             },
             MacroAxisStatus {
                 label: "PROVIDERS",
-                percent: providers_percent + 12,
+                percent: providers_percent + 24,
                 phase: "lane",
-                summary: "codex live lane online, adapter spine started",
-                steps_remaining: 6,
+                summary: "codex and anthropic paths are online through the adapter spine",
+                steps_remaining: 4,
             },
             MacroAxisStatus {
                 label: "CAPSULES",
@@ -1877,17 +2101,17 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             },
             MacroAxisStatus {
                 label: "SECURITY",
-                percent: 46,
-                phase: "baseline",
-                summary: "policy baseline live, approvals and hardening ahead",
-                steps_remaining: 7,
+                percent: 72,
+                phase: "guardrails",
+                summary: "policy baseline and approval gate are live; deeper controls still ahead",
+                steps_remaining: 4,
             },
             MacroAxisStatus {
                 label: "AUTONOMY",
-                percent: 58,
+                percent: 72,
                 phase: "self-propelled",
-                summary: "background house loop is online, mission autonomy still evolving",
-                steps_remaining: 6,
+                summary: "background house loop is online with approval guardrails; mission autonomy still evolving",
+                steps_remaining: 4,
             },
         ],
         done: vec![
@@ -1897,17 +2121,18 @@ fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
             "mandala capsules, slots, and fieldvault artifacts",
             "provider lane, dispatch flow, and live codex execution",
             "capsule memory with summaries, bridges, promotions, and compaction",
+            "approval guardrails and human interruptability for live execution",
         ],
         doing: vec![
             "turning memory orchestration into a first-class runtime discipline",
             "improving macro visibility for chat and cockpit",
             "tightening the provider lane around sovereign context packets",
-            "turning explicit operator continuation into house autonomy",
+            "turning explicit operator continuation into mission-aware autonomy",
         ],
         next: vec![
-            "add adapter trait and a second adapter shape",
+            "expose adapter readiness and failures as stronger house events",
             "deepen autonomy from baseline loop into mission-aware execution",
-            "add decision and promise memory capsules",
+            "grow world state from bounded slices into incremental host graphing",
         ],
         later: vec![
             "multi-engine adapters",
@@ -2013,13 +2238,13 @@ fn build_control_plane_status(inventory: &HouseInventory) -> ControlPlaneRespons
             },
             ControlPlaneSection {
                 label: "Security Surface",
-                status: if inventory.fieldvault_artifacts > 0 {
+                status: if inventory.approval_requests > 0 || inventory.fieldvault_artifacts > 0 {
                     "partial"
                 } else {
                     "baseline"
                 },
                 priority: "medium",
-                summary: "policy baseline, sealing posture, and capability counts are now visible; approvals still need a dedicated surface",
+                summary: "policy baseline, sealing posture, capability counts, and approval guardrails are now visible",
             },
             ControlPlaneSection {
                 label: "Autonomy Surface",
@@ -3139,6 +3364,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           </div>
 
           <div class="panel">
+            <h2>Approval Surface</h2>
+            <div class="small">Human interruptability and live execution guardrails for the house.</div>
+            <div class="list" id="approvals-view"></div>
+          </div>
+
+          <div class="panel">
             <h2>World State Console</h2>
             <div class="small">Bounded host-state slices for on-demand computer context.</div>
             <div class="list" id="world-state-view"></div>
@@ -3237,6 +3468,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const providerReadinessViewEl = document.getElementById('provider-readiness-view');
       const distillerStatusViewEl = document.getElementById('distiller-status-view');
       const securityStatusViewEl = document.getElementById('security-status-view');
+      const approvalsViewEl = document.getElementById('approvals-view');
       const worldStateViewEl = document.getElementById('world-state-view');
       const autonomyStatusViewEl = document.getElementById('autonomy-status-view');
       const autonomyStatusLineEl = document.getElementById('autonomy-status-line');
@@ -3274,6 +3506,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         providerReadiness: null,
         distillerStatus: null,
         securityStatus: null,
+        approvals: null,
         worldState: null,
         autonomyStatus: null,
         memorySearch: null
@@ -3294,6 +3527,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['bridges', inventory.memory_bridges ?? 0],
           ['triggers', inventory.resynthesis_triggers ?? 0],
           ['promotions', inventory.memory_promotions ?? 0],
+          ['approvals', inventory.approval_requests ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -3423,6 +3657,36 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">sealed artifacts: ${escapeHtml(security.artifacts_total)}</div>
             <div class="meta">artifact levels: ${escapeHtml((security.artifact_seal_levels || []).join(' | ') || 'none')}</div>
           </div>
+        `;
+      }
+
+      function renderApprovals() {
+        if (!state.approvals) {
+          approvalsViewEl.innerHTML = '<div class="empty">Approval surface not loaded yet.</div>';
+          return;
+        }
+        const status = state.approvals;
+        const approvals = status.approvals || [];
+        approvalsViewEl.innerHTML = `
+          <div class="card">
+            <strong>Approval Status</strong>
+            <div class="meta">pending: ${escapeHtml(status.pending ?? 0)}</div>
+            <div class="meta">granted: ${escapeHtml(status.granted ?? 0)}</div>
+            <div class="meta">denied: ${escapeHtml(status.denied ?? 0)}</div>
+          </div>
+          ${approvals.length ? approvals.map(approval => `
+            <div class="card">
+              <strong>${escapeHtml(approval.action)}</strong>
+              <div class="meta">status: ${escapeHtml(approval.status)}</div>
+              <div class="meta">dispatch: ${escapeHtml(approval.dispatch_id)}</div>
+              <div class="meta">provider lane: ${escapeHtml(approval.provider_lane_id)}</div>
+              <div class="meta">reason: ${escapeHtml(approval.reason)}</div>
+              ${approval.status === 'pending' ? `<div class="action-row">
+                <button onclick="grantApproval('${escapeHtml(approval.approval_request_id)}')">Grant</button>
+                <button onclick="denyApproval('${escapeHtml(approval.approval_request_id)}')">Deny</button>
+              </div>` : ''}
+            </div>
+          `).join('') : '<div class="empty">No approvals requested yet.</div>'}
         `;
       }
 
@@ -3856,6 +4120,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderSecurityStatus();
       }
 
+      async function refreshApprovals() {
+        const res = await fetch('/status/approvals');
+        state.approvals = await res.json();
+        renderApprovals();
+      }
+
       async function refreshWorldState() {
         const res = await fetch('/status/world-state');
         state.worldState = await res.json();
@@ -3880,6 +4150,42 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         state.autonomyStatus = await res.json();
         renderAutonomyStatus();
+      }
+
+      async function grantApproval(id) {
+        const res = await fetch(`/approvals/${encodeURIComponent(id)}/grant`, { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to grant approval');
+        }
+        await Promise.all([
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshSecurityStatus(),
+          refreshApprovals(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshEvents()
+        ]);
+      }
+
+      async function denyApproval(id) {
+        const res = await fetch(`/approvals/${encodeURIComponent(id)}/deny`, { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to deny approval');
+        }
+        await Promise.all([
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshSecurityStatus(),
+          refreshApprovals(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshEvents()
+        ]);
       }
 
       async function searchMemory() {
@@ -4033,7 +4339,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const session = await res.json();
         state.sessions.push(session);
         renderSessions();
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
       }
 
       async function createTurn(intentSummary) {
@@ -4063,6 +4369,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshApprovals(),
           refreshWorldState(),
           refreshAutonomyStatus(),
           refreshTurns(),
@@ -4090,6 +4397,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshApprovals(),
           refreshWorldState(),
           refreshAutonomyStatus(),
           refreshTurns(),
@@ -4106,7 +4414,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         executeLiveStatusEl.textContent = 'running codex live lane…';
         const res = await fetch('/dispatches/execute-latest-live', { method: 'POST' });
         if (!res.ok) {
-          throw new Error('failed to execute latest dispatch live');
+          const message = await res.text();
+          throw new Error(message || 'failed to execute latest dispatch live');
         }
         const result = await res.json();
         executeLiveStatusEl.textContent = `${result.dispatch.provider_lane_id} -> live completed`;
@@ -4117,6 +4426,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshProviderReadiness(),
           refreshDistillerStatus(),
           refreshSecurityStatus(),
+          refreshApprovals(),
           refreshWorldState(),
           refreshAutonomyStatus(),
           refreshTurns(),
@@ -4163,7 +4473,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
       }
 
       async function bootstrapProviderLane() {
@@ -4175,7 +4485,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       async function bootstrapAnthropicLane() {
@@ -4187,7 +4497,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const result = await res.json();
         providerSecondaryStatusEl.textContent = `${result.provider} -> ${result.model}`;
-        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
       }
 
       function connectEvents() {
@@ -4209,6 +4519,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshContextPacket().catch(console.error);
@@ -4219,6 +4530,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshTurns().catch(console.error);
@@ -4226,13 +4538,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshSummaries().catch(console.error);
               refreshPromotions().catch(console.error);
               refreshContextPacket().catch(console.error);
-            } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed') {
+            } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed' || event.event_type === 'approval_required' || event.event_type === 'approval_granted' || event.event_type === 'approval_denied') {
               refreshInventory().catch(console.error);
               refreshMacroStatus().catch(console.error);
               refreshControlPlane().catch(console.error);
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshTurns().catch(console.error);
@@ -4248,6 +4561,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
@@ -4260,6 +4574,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
@@ -4271,6 +4586,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshArtifacts().catch(console.error);
@@ -4281,6 +4597,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshProviders().catch(console.error);
@@ -4292,6 +4609,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshProviderReadiness().catch(console.error);
               refreshDistillerStatus().catch(console.error);
               refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
               refreshWorldState().catch(console.error);
               refreshAutonomyStatus().catch(console.error);
               refreshMemoryCapsules().catch(console.error);
@@ -4438,6 +4756,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshProviderReadiness(),
         refreshDistillerStatus(),
         refreshSecurityStatus(),
+        refreshApprovals(),
         refreshWorldState(),
         refreshAutonomyStatus(),
         refreshSessions(),

@@ -19,13 +19,14 @@ pub use mandala::{
     MandalaSelf, MandalaSkillPack, MandalaStableMemory, SacredShard,
 };
 pub use runtime::{
-    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime,
-    KernelError, LaneRecord, MandalaRegistry, MemoryBridgeRecord, MemoryBridgeRegistry,
-    MemoryCapsuleRecord, MemoryCapsuleRegistry, MemoryPromotionRecord, MemoryPromotionRegistry,
-    ProviderLaneRecord, ProviderLaneRegistry, ResynthesisTriggerRecord, ResynthesisTriggerRegistry,
-    SessionManager, SessionRecord, SlotRegistry, SummaryCheckpointRecord,
-    SummaryCheckpointRegistry, TurnDispatchRecord, TurnDispatchRegistry, TurnRecord,
-    WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
+    ApprovalRegistry, ApprovalRequestRecord, CapsuleRecord, CapsuleRegistry, EventStore,
+    FieldVaultRuntime, HouseInventory, HouseRuntime, KernelError, LaneRecord, MandalaRegistry,
+    MemoryBridgeRecord, MemoryBridgeRegistry, MemoryCapsuleRecord, MemoryCapsuleRegistry,
+    MemoryPromotionRecord, MemoryPromotionRegistry, ProviderLaneRecord, ProviderLaneRegistry,
+    ResynthesisTriggerRecord, ResynthesisTriggerRegistry, SessionManager, SessionRecord,
+    SlotRegistry, SummaryCheckpointRecord, SummaryCheckpointRegistry, TurnDispatchRecord,
+    TurnDispatchRegistry, TurnRecord, WorldStateProcessEntry, WorldStateSlice,
+    WorldStateWorkspaceEntry,
 };
 pub use session::{LaneState, SessionState, TurnState};
 pub use slot::{PersonalitySlot, SlotBindingState};

@@ -155,6 +155,19 @@ pub struct MemoryPromotionRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRequestRecord {
+    pub approval_request_id: String,
+    pub session_id: SessionId,
+    pub dispatch_id: String,
+    pub provider_lane_id: String,
+    pub action: String,
+    pub reason: String,
+    pub status: String,
+    pub created_at: chrono::DateTime<Utc>,
+    pub resolved_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldStateWorkspaceEntry {
     pub path: String,
     pub kind: String,
@@ -977,6 +990,85 @@ impl MemoryPromotionRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct ApprovalRegistry {
+    approvals: BTreeMap<String, ApprovalRequestRecord>,
+}
+
+impl ApprovalRegistry {
+    pub fn request(
+        &mut self,
+        session_id: SessionId,
+        dispatch_id: impl Into<String>,
+        provider_lane_id: impl Into<String>,
+        action: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> ApprovalRequestRecord {
+        let approval = ApprovalRequestRecord {
+            approval_request_id: format!("approval_{}", Uuid::now_v7()),
+            session_id,
+            dispatch_id: dispatch_id.into(),
+            provider_lane_id: provider_lane_id.into(),
+            action: action.into(),
+            reason: reason.into(),
+            status: "pending".into(),
+            created_at: Utc::now(),
+            resolved_at: None,
+        };
+        self.approvals
+            .insert(approval.approval_request_id.clone(), approval.clone());
+        approval
+    }
+
+    pub fn all(&self) -> Vec<&ApprovalRequestRecord> {
+        self.approvals.values().collect()
+    }
+
+    pub fn pending(&self) -> Vec<&ApprovalRequestRecord> {
+        self.approvals
+            .values()
+            .filter(|approval| approval.status == "pending")
+            .collect()
+    }
+
+    pub fn find_pending_by_dispatch(&self, dispatch_id: &str) -> Option<&ApprovalRequestRecord> {
+        self.approvals
+            .values()
+            .find(|approval| approval.dispatch_id == dispatch_id && approval.status == "pending")
+    }
+
+    pub fn has_granted_for_dispatch(&self, dispatch_id: &str) -> bool {
+        self.approvals
+            .values()
+            .any(|approval| approval.dispatch_id == dispatch_id && approval.status == "granted")
+    }
+
+    pub fn grant(&mut self, approval_request_id: &str) -> Result<ApprovalRequestRecord, KernelError> {
+        let approval = self
+            .approvals
+            .get_mut(approval_request_id)
+            .ok_or_else(|| KernelError::TurnNotFound(approval_request_id.into()))?;
+        approval.status = "granted".into();
+        approval.resolved_at = Some(Utc::now());
+        Ok(approval.clone())
+    }
+
+    pub fn deny(&mut self, approval_request_id: &str) -> Result<ApprovalRequestRecord, KernelError> {
+        let approval = self
+            .approvals
+            .get_mut(approval_request_id)
+            .ok_or_else(|| KernelError::TurnNotFound(approval_request_id.into()))?;
+        approval.status = "denied".into();
+        approval.resolved_at = Some(Utc::now());
+        Ok(approval.clone())
+    }
+
+    pub fn insert_existing(&mut self, approval: ApprovalRequestRecord) {
+        self.approvals
+            .insert(approval.approval_request_id.clone(), approval);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -994,6 +1086,7 @@ pub struct HouseInventory {
     pub memory_bridges: usize,
     pub resynthesis_triggers: usize,
     pub memory_promotions: usize,
+    pub approval_requests: usize,
 }
 
 #[derive(Debug, Default)]
@@ -1011,6 +1104,7 @@ pub struct HouseRuntime {
     pub memory_bridges: MemoryBridgeRegistry,
     pub resynthesis_triggers: ResynthesisTriggerRegistry,
     pub memory_promotions: MemoryPromotionRegistry,
+    pub approvals: ApprovalRegistry,
 }
 
 impl HouseRuntime {
@@ -1059,6 +1153,7 @@ impl HouseRuntime {
             memory_bridges: self.memory_bridges.all().len(),
             resynthesis_triggers: self.resynthesis_triggers.all().len(),
             memory_promotions: self.memory_promotions.all().len(),
+            approval_requests: self.approvals.all().len(),
         }
     }
 
