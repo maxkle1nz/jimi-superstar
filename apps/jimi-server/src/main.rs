@@ -211,6 +211,7 @@ struct AutonomyStatusResponse {
     queued_dispatch_count: usize,
     awaiting_approval_count: usize,
     recommended_next_step: String,
+    transition_guidance: String,
     last_dispatch_id: Option<String>,
     last_intent_summary: Option<String>,
     last_selection_reason: Option<String>,
@@ -2179,7 +2180,53 @@ async fn distiller_status(State(state): State<AppState>) -> Json<DistillerStatus
     })
 }
 
-fn current_mission_state(runtime: &HouseRuntime) -> (String, Option<String>, Vec<String>, usize, usize, String) {
+fn guidance_from_transition(
+    last_transition: Option<&str>,
+    next_actions: &[String],
+    awaiting_approval_count: usize,
+    queued_dispatch_count: usize,
+) -> String {
+    let next_action = next_actions
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "define the next mission".to_string());
+
+    match last_transition.unwrap_or_default() {
+        transition if transition.starts_with("approval_denied:") => {
+            "revise the blocked turn or reroute it through a safer lane".to_string()
+        }
+        transition if transition.starts_with("awaiting_approval:") => {
+            "resolve the pending approval so the mission can continue".to_string()
+        }
+        transition if transition.starts_with("degraded:") => {
+            "inspect the degraded lane and prefer a ready fallback in the same group".to_string()
+        }
+        transition if transition.starts_with("fallback:") => {
+            "observe the fallback lane and let autonomy continue if the output looks healthy"
+                .to_string()
+        }
+        transition if transition.starts_with("failed:") => {
+            "rebuild the failed dispatch with a narrower intent or a different provider rail"
+                .to_string()
+        }
+        transition if transition.starts_with("completed:") && !next_actions.is_empty() => {
+            format!("promote the mission by dispatching the next action: {next_action}")
+        }
+        _ if awaiting_approval_count > 0 => "review and resolve pending approvals".to_string(),
+        _ if queued_dispatch_count > 0 => {
+            "let autonomy continue through queued dispatches".to_string()
+        }
+        _ if !next_actions.is_empty() => {
+            format!("spawn the next turn toward: {next_action}")
+        }
+        _ => "ground the next mission move explicitly".to_string(),
+    }
+}
+
+fn current_mission_state(
+    runtime: &HouseRuntime,
+    autonomy_status: Option<&AutonomyStatus>,
+) -> (String, Option<String>, Vec<String>, usize, usize, String, String) {
     let active_mandala = runtime
         .slots
         .all()
@@ -2220,6 +2267,12 @@ fn current_mission_state(runtime: &HouseRuntime) -> (String, Option<String>, Vec
     } else {
         "define the next mission".to_string()
     };
+    let transition_guidance = guidance_from_transition(
+        autonomy_status.and_then(|status| status.last_transition.as_deref()),
+        &next_actions,
+        awaiting_approval_count,
+        queued_dispatch_count,
+    );
     (
         mission_phase,
         current_goal,
@@ -2227,6 +2280,7 @@ fn current_mission_state(runtime: &HouseRuntime) -> (String, Option<String>, Vec
         queued_dispatch_count,
         awaiting_approval_count,
         recommended_next_step,
+        transition_guidance,
     )
 }
 
@@ -2237,6 +2291,11 @@ fn mark_autonomy_transition(status: &mut AutonomyStatus, transition: impl Into<S
 
 async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusResponse> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    let status = state
+        .autonomy_status
+        .lock()
+        .expect("autonomy status lock poisoned")
+        .clone();
     let (
         mission_phase,
         current_goal,
@@ -2244,13 +2303,9 @@ async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusRe
         queued_dispatch_count,
         awaiting_approval_count,
         recommended_next_step,
-    ) = current_mission_state(&runtime);
+        transition_guidance,
+    ) = current_mission_state(&runtime, Some(&status));
     drop(runtime);
-    let status = state
-        .autonomy_status
-        .lock()
-        .expect("autonomy status lock poisoned")
-        .clone();
     Json(AutonomyStatusResponse {
         enabled: status.enabled,
         running: status.running,
@@ -2264,6 +2319,7 @@ async fn autonomy_status(State(state): State<AppState>) -> Json<AutonomyStatusRe
         queued_dispatch_count,
         awaiting_approval_count,
         recommended_next_step,
+        transition_guidance,
         last_dispatch_id: status.last_dispatch_id,
         last_intent_summary: status.last_intent_summary,
         last_selection_reason: status.last_selection_reason,
@@ -2283,7 +2339,8 @@ async fn set_autonomy(
         queued_dispatch_count,
         awaiting_approval_count,
         recommended_next_step,
-    ) = current_mission_state(&runtime);
+        transition_guidance,
+    ) = current_mission_state(&runtime, None);
     drop(runtime);
     let mut status = state.autonomy_status.lock().map_err(internal_lock_error)?;
     status.enabled = request.enabled;
@@ -2308,6 +2365,7 @@ async fn set_autonomy(
         queued_dispatch_count,
         awaiting_approval_count,
         recommended_next_step,
+        transition_guidance,
         last_dispatch_id: status.last_dispatch_id.clone(),
         last_intent_summary: status.last_intent_summary.clone(),
         last_selection_reason: status.last_selection_reason.clone(),
@@ -4353,6 +4411,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">queued dispatches: ${escapeHtml(autonomy.queued_dispatch_count ?? 0)}</div>
             <div class="meta">awaiting approvals: ${escapeHtml(autonomy.awaiting_approval_count ?? 0)}</div>
             <div class="meta">recommended next step: ${escapeHtml(autonomy.recommended_next_step || 'none')}</div>
+            <div class="meta">transition guidance: ${escapeHtml(autonomy.transition_guidance || 'none')}</div>
             <div class="meta">last dispatch: ${escapeHtml(autonomy.last_dispatch_id || 'none')}</div>
             <div class="meta">last intent: ${escapeHtml(autonomy.last_intent_summary || 'none')}</div>
             <div class="meta">selection reason: ${escapeHtml(autonomy.last_selection_reason || 'none')}</div>
