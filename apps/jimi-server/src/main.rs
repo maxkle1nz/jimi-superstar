@@ -25,7 +25,7 @@ use jimi_kernel::{
     HouseInventory, HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy,
     MandalaCapsuleContract, MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy,
     MandalaProjection, MandalaRefs, MandalaSelf, MandalaStableMemory, MemoryBridgeRecord,
-    MemoryCapsuleRecord, MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel,
+    CapsulePackageRecord, MemoryCapsuleRecord, MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel,
     SessionRecord, SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord,
     TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord, WorldStateRelationRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
@@ -263,6 +263,7 @@ struct ControlPlaneResponse {
 struct CapsuleBootstrapResponse {
     mandala_id: String,
     capsule_id: String,
+    package_id: String,
     slot_id: String,
     slot_state: SlotBindingState,
 }
@@ -404,6 +405,7 @@ async fn main() {
             post(update_mandala_memory_policy),
         )
         .route("/capsules", get(list_capsules))
+        .route("/capsule-packages", get(list_capsule_packages))
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
         .route("/providers", get(list_providers))
@@ -2261,6 +2263,13 @@ async fn list_capsules(State(state): State<AppState>) -> Json<Vec<jimi_kernel::C
     Json(runtime.capsules.all().into_iter().cloned().collect())
 }
 
+async fn list_capsule_packages(
+    State(state): State<AppState>,
+) -> Json<Vec<CapsulePackageRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.capsule_packages.all().into_iter().cloned().collect())
+}
+
 async fn list_slots(State(state): State<AppState>) -> Json<Vec<jimi_kernel::PersonalitySlot>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.slots.all().into_iter().cloned().collect())
@@ -3077,6 +3086,7 @@ async fn bootstrap_core_capsule(
 
     let mandala_id = "jimi.superstar.core".to_string();
     let capsule_id = "capsule.jimi.superstar.core.v1".to_string();
+    let package_id = "package.jimi.superstar.core.v1".to_string();
     let slot_id = "slot.jimi.superstar.primary".to_string();
 
     if runtime.mandalas.get(&mandala_id).is_err() {
@@ -3125,6 +3135,26 @@ async fn bootstrap_core_capsule(
                 "version": 1,
                 "install_source": "house.bootstrap",
             }),
+        );
+    }
+
+    let package_exists = runtime
+        .capsule_packages
+        .all()
+        .into_iter()
+        .any(|package| package.package_id == package_id);
+    if !package_exists {
+        runtime.capsule_packages.register(
+            package_id.clone(),
+            capsule_id.clone(),
+            mandala_id.clone(),
+            1,
+            "JIMI Core Capsule",
+            "max kle1nz",
+            "house.bootstrap",
+            "digest::jimi.superstar.core.v1",
+            "internal",
+            "installed",
         );
     }
 
@@ -3182,6 +3212,7 @@ async fn bootstrap_core_capsule(
         Json(CapsuleBootstrapResponse {
             mandala_id,
             capsule_id,
+            package_id,
             slot_id,
             slot_state: slot.state,
         }),
@@ -4376,6 +4407,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         events: [],
         mandalas: [],
         capsules: [],
+        capsulePackages: [],
         slots: [],
         artifacts: [],
         providers: [],
@@ -4397,6 +4429,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['events', inventory.events ?? 0],
           ['mandalas', inventory.mandalas ?? 0],
           ['capsules', inventory.capsules ?? 0],
+          ['capsule packages', inventory.capsule_packages ?? 0],
           ['slots', inventory.slots ?? 0],
           ['fieldvault', inventory.fieldvault_artifacts ?? 0],
           ['providers', inventory.provider_lanes ?? 0],
@@ -4753,14 +4786,20 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         if (!state.capsules.length) {
           capsuleListEl.innerHTML = '<div class="empty">No capsules installed yet.</div>';
         } else {
-          capsuleListEl.innerHTML = state.capsules.map(capsule => `
+          const packageMap = new Map((state.capsulePackages || []).map(pkg => [pkg.capsule_id, pkg]));
+          capsuleListEl.innerHTML = state.capsules.map(capsule => {
+            const pkg = packageMap.get(capsule.capsule_id);
+            return `
             <div class="card">
               <strong>${escapeHtml(capsule.capsule_id)}</strong>
               <div class="meta">mandala: ${escapeHtml(capsule.mandala_id)}</div>
               <div class="meta">version: ${escapeHtml(capsule.version)}</div>
               <div class="meta">source: ${escapeHtml(capsule.install_source)}</div>
+              <div class="meta">package: ${escapeHtml(pkg?.package_id || 'none')}</div>
+              <div class="meta">trust: ${escapeHtml(pkg?.trust_level || 'unknown')}</div>
+              <div class="meta">creator: ${escapeHtml(pkg?.creator || 'unknown')}</div>
             </div>
-          `).join('');
+          `}).join('');
         }
       }
 
@@ -5217,6 +5256,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         renderCapsules();
       }
 
+      async function refreshCapsulePackages() {
+        const res = await fetch('/capsule-packages');
+        state.capsulePackages = await res.json();
+        renderCapsules();
+      }
+
       async function refreshSlots() {
         const res = await fetch('/slots');
         state.slots = await res.json();
@@ -5405,6 +5450,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshAutonomyStatus(),
           refreshMandalas(),
           refreshCapsules(),
+          refreshCapsulePackages(),
           refreshSlots(),
           refreshEvents()
         ]);
@@ -5512,6 +5558,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               refreshAutonomyStatus().catch(console.error);
               refreshMandalas().catch(console.error);
               refreshCapsules().catch(console.error);
+              refreshCapsulePackages().catch(console.error);
               refreshSlots().catch(console.error);
             } else if (event.event_type === 'mandala_policy_updated') {
               refreshInventory().catch(console.error);
@@ -5710,6 +5757,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshDispatches(),
         refreshMandalas(),
         refreshCapsules(),
+        refreshCapsulePackages(),
         refreshSlots(),
         refreshArtifacts(),
         refreshProviders(),

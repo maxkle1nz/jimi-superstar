@@ -19,8 +19,8 @@ pub use mandala::{
     MandalaSelf, MandalaSkillPack, MandalaStableMemory, SacredShard,
 };
 pub use runtime::{
-    ApprovalRegistry, ApprovalRequestRecord, CapsuleRecord, CapsuleRegistry, EventStore,
-    FieldVaultRuntime, HouseInventory, HouseRuntime, KernelError, LaneRecord, MandalaRegistry,
+    ApprovalRegistry, ApprovalRequestRecord, CapsulePackageRecord, CapsulePackageRegistry,
+    CapsuleRecord, CapsuleRegistry, EventStore, FieldVaultRuntime, HouseInventory, HouseRuntime, KernelError, LaneRecord, MandalaRegistry,
     MemoryBridgeRecord, MemoryBridgeRegistry, MemoryCapsuleRecord, MemoryCapsuleRegistry,
     MemoryPromotionRecord, MemoryPromotionRegistry, ProviderLaneRecord, ProviderLaneRegistry,
     ResynthesisTriggerRecord, ResynthesisTriggerRegistry, SessionManager, SessionRecord,

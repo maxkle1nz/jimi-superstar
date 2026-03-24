@@ -67,6 +67,21 @@ pub struct CapsuleRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapsulePackageRecord {
+    pub package_id: String,
+    pub capsule_id: String,
+    pub mandala_id: String,
+    pub version: u32,
+    pub display_name: String,
+    pub creator: String,
+    pub source_origin: String,
+    pub package_digest: String,
+    pub trust_level: String,
+    pub install_status: String,
+    pub installed_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderLaneRecord {
     pub provider_lane_id: String,
     pub provider: String,
@@ -473,6 +488,52 @@ impl CapsuleRegistry {
 
     pub fn insert_existing(&mut self, capsule: CapsuleRecord) {
         self.capsules.insert(capsule.capsule_id.clone(), capsule);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CapsulePackageRegistry {
+    packages: BTreeMap<String, CapsulePackageRecord>,
+}
+
+impl CapsulePackageRegistry {
+    pub fn register(
+        &mut self,
+        package_id: impl Into<String>,
+        capsule_id: impl Into<String>,
+        mandala_id: impl Into<String>,
+        version: u32,
+        display_name: impl Into<String>,
+        creator: impl Into<String>,
+        source_origin: impl Into<String>,
+        package_digest: impl Into<String>,
+        trust_level: impl Into<String>,
+        install_status: impl Into<String>,
+    ) -> CapsulePackageRecord {
+        let package = CapsulePackageRecord {
+            package_id: package_id.into(),
+            capsule_id: capsule_id.into(),
+            mandala_id: mandala_id.into(),
+            version,
+            display_name: display_name.into(),
+            creator: creator.into(),
+            source_origin: source_origin.into(),
+            package_digest: package_digest.into(),
+            trust_level: trust_level.into(),
+            install_status: install_status.into(),
+            installed_at: Utc::now(),
+        };
+        self.packages
+            .insert(package.package_id.clone(), package.clone());
+        package
+    }
+
+    pub fn all(&self) -> Vec<&CapsulePackageRecord> {
+        self.packages.values().collect()
+    }
+
+    pub fn insert_existing(&mut self, package: CapsulePackageRecord) {
+        self.packages.insert(package.package_id.clone(), package);
     }
 }
 
@@ -1240,6 +1301,7 @@ pub struct HouseInventory {
     pub events: usize,
     pub mandalas: usize,
     pub capsules: usize,
+    pub capsule_packages: usize,
     pub slots: usize,
     pub fieldvault_artifacts: usize,
     pub provider_lanes: usize,
@@ -1261,6 +1323,7 @@ pub struct HouseRuntime {
     pub sessions: SessionManager,
     pub mandalas: MandalaRegistry,
     pub capsules: CapsuleRegistry,
+    pub capsule_packages: CapsulePackageRegistry,
     pub slots: SlotRegistry,
     pub fieldvault: FieldVaultRuntime,
     pub providers: ProviderLaneRegistry,
@@ -1313,6 +1376,7 @@ impl HouseRuntime {
             events: self.events.all().len(),
             mandalas: self.mandalas.all().len(),
             capsules: self.capsules.all().len(),
+            capsule_packages: self.capsule_packages.all().len(),
             slots: self.slots.all().len(),
             fieldvault_artifacts: self.fieldvault.all().len(),
             provider_lanes: self.providers.all().len(),

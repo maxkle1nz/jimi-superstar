@@ -5,7 +5,7 @@ use rusqlite::{Connection, params};
 use thiserror::Error;
 
 use crate::{
-    ApprovalRequestRecord, CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime,
+    ApprovalRequestRecord, CapsulePackageRecord, CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime,
     KernelError, LaneId, LaneRecord, MandalaManifest, MemoryBridgeRecord, MemoryCapsuleRecord,
     MemoryPromotionRecord, PersonalitySlot, ProviderLaneRecord, ResynthesisTriggerRecord,
     SessionId, SessionRecord, SummaryCheckpointRecord, TurnDispatchRecord, TurnId, TurnRecord,
@@ -92,6 +92,20 @@ impl DurableStore {
               mandala_id TEXT NOT NULL,
               version INTEGER NOT NULL,
               install_source TEXT NOT NULL,
+              installed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS capsule_packages (
+              package_id TEXT PRIMARY KEY,
+              capsule_id TEXT NOT NULL,
+              mandala_id TEXT NOT NULL,
+              version INTEGER NOT NULL,
+              display_name TEXT NOT NULL,
+              creator TEXT NOT NULL,
+              source_origin TEXT NOT NULL,
+              package_digest TEXT NOT NULL,
+              trust_level TEXT NOT NULL,
+              install_status TEXT NOT NULL,
               installed_at TEXT NOT NULL
             );
 
@@ -397,6 +411,26 @@ impl DurableStore {
                     capsule.version as i64,
                     capsule.install_source,
                     capsule.installed_at.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        for package in runtime.capsule_packages.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO capsule_packages (package_id, capsule_id, mandala_id, version, display_name, creator, source_origin, package_digest, trust_level, install_status, installed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    package.package_id,
+                    package.capsule_id,
+                    package.mandala_id,
+                    package.version as i64,
+                    package.display_name,
+                    package.creator,
+                    package.source_origin,
+                    package.package_digest,
+                    package.trust_level,
+                    package.install_status,
+                    package.installed_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -813,6 +847,55 @@ impl DurableStore {
                     mandala_id,
                     version: version as u32,
                     install_source,
+                    installed_at: parse_dt(&installed_at)?,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT package_id, capsule_id, mandala_id, version, display_name, creator, source_origin, package_digest, trust_level, install_status, installed_at FROM capsule_packages",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    package_id,
+                    capsule_id,
+                    mandala_id,
+                    version,
+                    display_name,
+                    creator,
+                    source_origin,
+                    package_digest,
+                    trust_level,
+                    install_status,
+                    installed_at,
+                ) = row?;
+                runtime.capsule_packages.insert_existing(CapsulePackageRecord {
+                    package_id,
+                    capsule_id,
+                    mandala_id,
+                    version: version as u32,
+                    display_name,
+                    creator,
+                    source_origin,
+                    package_digest,
+                    trust_level,
+                    install_status,
                     installed_at: parse_dt(&installed_at)?,
                 });
             }
