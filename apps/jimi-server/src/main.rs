@@ -1434,8 +1434,14 @@ async fn run_latest_dispatch_live_once(
     };
 
     let adapter = resolve_provider_adapter(&provider_lane);
+    let provider_lane_for_execution = provider_lane.clone();
     let output_text = tokio::task::spawn_blocking(move || {
-        run_provider_adapter(&adapter, &house_root, &provider_prompt)
+        run_provider_adapter(
+            &provider_lane_for_execution,
+            &adapter,
+            &house_root,
+            &provider_prompt,
+        )
     })
     .await
     .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?

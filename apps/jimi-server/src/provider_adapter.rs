@@ -1,6 +1,7 @@
 use std::{path::PathBuf, process::Command};
 
 use jimi_kernel::ProviderLaneRecord;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub enum ProviderAdapterKind {
@@ -11,7 +12,12 @@ pub enum ProviderAdapterKind {
 
 pub trait ProviderAdapter {
     fn label(&self) -> &'static str;
-    fn execute(&self, house_root: &PathBuf, provider_prompt: &str) -> Result<String, String>;
+    fn execute(
+        &self,
+        provider_lane: &ProviderLaneRecord,
+        house_root: &PathBuf,
+        provider_prompt: &str,
+    ) -> Result<String, String>;
 }
 
 #[derive(Debug, Default)]
@@ -25,12 +31,29 @@ struct UnsupportedAdapter {
     provider: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AnthropicMessagesResponse {
+    content: Vec<AnthropicContentBlock>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
+}
+
 impl ProviderAdapter for CodexCliAdapter {
     fn label(&self) -> &'static str {
         "live_codex"
     }
 
-    fn execute(&self, house_root: &PathBuf, provider_prompt: &str) -> Result<String, String> {
+    fn execute(
+        &self,
+        _provider_lane: &ProviderLaneRecord,
+        house_root: &PathBuf,
+        provider_prompt: &str,
+    ) -> Result<String, String> {
         run_codex_exec(house_root, provider_prompt)
     }
 }
@@ -40,7 +63,12 @@ impl ProviderAdapter for UnsupportedAdapter {
         "unsupported"
     }
 
-    fn execute(&self, _house_root: &PathBuf, _provider_prompt: &str) -> Result<String, String> {
+    fn execute(
+        &self,
+        _provider_lane: &ProviderLaneRecord,
+        _house_root: &PathBuf,
+        _provider_prompt: &str,
+    ) -> Result<String, String> {
         Err(format!(
             "provider adapter not implemented yet: {}",
             self.provider
@@ -53,8 +81,13 @@ impl ProviderAdapter for AnthropicApiAdapter {
         "anthropic_api"
     }
 
-    fn execute(&self, _house_root: &PathBuf, _provider_prompt: &str) -> Result<String, String> {
-        Err("provider adapter not implemented yet: anthropic".into())
+    fn execute(
+        &self,
+        provider_lane: &ProviderLaneRecord,
+        _house_root: &PathBuf,
+        provider_prompt: &str,
+    ) -> Result<String, String> {
+        run_anthropic_messages(provider_lane, provider_prompt)
     }
 }
 
@@ -67,19 +100,22 @@ pub fn resolve_provider_adapter(provider_lane: &ProviderLaneRecord) -> ProviderA
 }
 
 pub fn run_provider_adapter(
+    provider_lane: &ProviderLaneRecord,
     adapter: &ProviderAdapterKind,
     house_root: &PathBuf,
     provider_prompt: &str,
 ) -> Result<String, String> {
     match adapter {
-        ProviderAdapterKind::CodexCli => CodexCliAdapter.execute(house_root, provider_prompt),
+        ProviderAdapterKind::CodexCli => {
+            CodexCliAdapter.execute(provider_lane, house_root, provider_prompt)
+        }
         ProviderAdapterKind::AnthropicApi => {
-            AnthropicApiAdapter.execute(house_root, provider_prompt)
+            AnthropicApiAdapter.execute(provider_lane, house_root, provider_prompt)
         }
         ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
             provider: provider.clone(),
         }
-        .execute(house_root, provider_prompt),
+        .execute(provider_lane, house_root, provider_prompt),
     }
 }
 
@@ -121,4 +157,56 @@ fn run_codex_exec(house_root: &PathBuf, provider_prompt: &str) -> Result<String,
     let output = std::fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(output_path);
     Ok(output.trim().to_string())
+}
+
+fn run_anthropic_messages(
+    provider_lane: &ProviderLaneRecord,
+    provider_prompt: &str,
+) -> Result<String, String> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .map_err(|_| "ANTHROPIC_API_KEY is not set for anthropic provider lane".to_string())?;
+
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&serde_json::json!({
+            "model": provider_lane.model,
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": provider_prompt,
+                }
+            ]
+        }))
+        .send()
+        .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_else(|_| "<no body>".into());
+        return Err(format!("anthropic api failed with status {}: {}", status, body));
+    }
+
+    let parsed: AnthropicMessagesResponse = response.json().map_err(|error| error.to_string())?;
+    let text = parsed
+        .content
+        .into_iter()
+        .filter(|block| block.block_type == "text")
+        .filter_map(|block| block.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    if text.is_empty() {
+        Err("anthropic api returned no text content".into())
+    } else {
+        Ok(text)
+    }
 }
