@@ -21,6 +21,7 @@ Steering overlays now include:
 
 - `RETROBUILDER` as the official build method
 - `Mandala + FieldVault` as the canonical persistence and capsule model
+- `m1nd OVERVISION World State` as the host-state substrate donor
 - `RETROBUILDER Chat UIX` as the default human-friendly progress surface
 - `RETROBUILDER Macro UIX` as the panoramic project status surface
 - `JIMI Control Plane UI` as the integrated cockpit/configurator surface

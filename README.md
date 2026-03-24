@@ -8,6 +8,7 @@ The house is now also grounded in two constitutional ideas:
 
 - `RETROBUILDER`: one of the canonical work methods available inside JIMI SUPERSTAR, and the current flagship method for this build
 - `Mandala + FieldVault`: agent identity, memory, and installable capsules are first-class, not optional add-ons
+- `m1nd OVERVISION`: the host-state and world-state substrate donor for on-demand computer context
 
 ## House Thesis
 
@@ -26,6 +27,7 @@ JIMI SUPERSTAR is:
 - a cockpit-driven operator surface
 - a mandala-native agent substrate
 - a fieldvault-sealed capsule system
+- a world-state-aware cognitive runtime
 
 ## Work Methods
 
@@ -62,6 +64,19 @@ This makes the house capable of hosting a marketplace of installable agents, eac
 - internal programs
 - memory policies
 - sealed private shards
+
+## World State
+
+JIMI SUPERSTAR should not rely on blind prompt stuffing when a task needs real machine context.
+
+The intended direction is:
+
+- `m1nd OVERVISION` as the host-state substrate donor
+- layered indexing and incremental ingest for real computer state
+- on-demand world snapshots instead of full-machine prompt injection
+- bounded `ContextPacket` assembly from the relevant machine slice
+
+This means the house aims for total context availability, not total context injection.
 
 ## Stage 1 Focus
 

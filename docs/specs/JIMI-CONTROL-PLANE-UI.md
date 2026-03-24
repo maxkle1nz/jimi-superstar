@@ -90,7 +90,20 @@ Primary contents:
 - promotions
 - compression metrics
 
-### 6. Security Surface
+### 6. World State Console
+
+Controls and inspects host-state and machine-state truth.
+
+Primary contents:
+
+- indexed regions
+- active-region cache
+- workspace snapshots
+- process and app state
+- excluded or sealed regions
+- preview of `world_state_slice` entering a `ContextPacket`
+
+### 7. Security Surface
 
 Controls safety and authority boundaries.
 
@@ -103,7 +116,7 @@ Primary contents:
 - tool permissions
 - filesystem / runtime scope
 
-### 7. Workflow Composer
+### 8. Workflow Composer
 
 Controls execution flows.
 
@@ -115,7 +128,7 @@ Primary contents:
 - architecture flows
 - future storm flows
 
-### 8. Macro Planner
+### 9. Macro Planner
 
 Controls project-wide understanding.
 
@@ -127,7 +140,7 @@ Primary contents:
 - blockers
 - recommended next move
 
-### 9. Marketplace Shell
+### 10. Marketplace Shell
 
 Controls external installable ecosystem.
 
@@ -159,10 +172,11 @@ Recommended implementation order:
 3. Mandala Studio
 4. Provider Matrix
 5. Memory Console
-6. Security Surface
-7. Capsule Manager
-8. Workflow Composer
-9. Marketplace Shell
+6. World State Console
+7. Security Surface
+8. Capsule Manager
+9. Workflow Composer
+10. Marketplace Shell
 
 ## Read-First Rule
 

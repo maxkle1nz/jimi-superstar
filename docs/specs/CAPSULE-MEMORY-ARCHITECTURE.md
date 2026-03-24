@@ -111,6 +111,7 @@ It may include:
 - warm summary
 - archive summary fragments
 - graph bridges
+- world-state slices
 - `m1nd` retrievals
 - `roomanizer` memory retrievals
 - released `FieldVault` shards if allowed
@@ -238,6 +239,20 @@ Owned by:
 Purpose:
 
 - graph retrieval
+- host and project relations
+
+### `world-state truth`
+
+Owned by:
+
+- `m1nd OVERVISION`
+
+Purpose:
+
+- host state
+- filesystem state
+- process and app state
+- machine reality slices for on-demand context
 - relationship reasoning
 - impact and why-chains
 - non-linear query
