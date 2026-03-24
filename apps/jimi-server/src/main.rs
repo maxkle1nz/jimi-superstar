@@ -2,9 +2,10 @@ use std::{
     collections::BTreeSet,
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
     sync::{Arc, Mutex},
 };
+
+mod provider_adapter;
 
 use axum::{
     Json, Router,
@@ -21,9 +22,10 @@ use jimi_kernel::{
     HouseRuntime, MandalaActiveSnapshot, MandalaCapabilityPolicy, MandalaCapsuleContract,
     MandalaExecutionPolicy, MandalaManifest, MandalaMemoryPolicy, MandalaProjection, MandalaRefs,
     MandalaSelf, MandalaStableMemory, MemoryBridgeRecord, MemoryCapsuleRecord,
-    MemoryPromotionRecord, ProviderLaneRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord,
-    SlotBindingState, SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
+    MemoryPromotionRecord, ResynthesisTriggerRecord, SealLevel, SessionRecord, SlotBindingState,
+    SubjectRef, SummaryCheckpointRecord, TurnDispatchRecord, TurnRecord,
 };
+use provider_adapter::{resolve_provider_adapter, run_provider_adapter};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
@@ -191,12 +193,6 @@ struct CompactedProviderResponse {
     confidence_level: f32,
     raw_length: usize,
     compacted_length: usize,
-}
-
-#[derive(Debug, Clone)]
-enum ProviderAdapterKind {
-    CodexCli,
-    Unsupported(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -1864,64 +1860,6 @@ fn internal_lock_error<T>(_error: T) -> (StatusCode, String) {
 
 fn internal_store_error(error: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-}
-
-impl ProviderAdapterKind {
-    fn label(&self) -> &'static str {
-        match self {
-            ProviderAdapterKind::CodexCli => "live_codex",
-            ProviderAdapterKind::Unsupported(_) => "unsupported",
-        }
-    }
-}
-
-fn resolve_provider_adapter(provider_lane: &ProviderLaneRecord) -> ProviderAdapterKind {
-    match provider_lane.provider.as_str() {
-        "codex" => ProviderAdapterKind::CodexCli,
-        other => ProviderAdapterKind::Unsupported(other.to_string()),
-    }
-}
-
-fn run_provider_adapter(
-    adapter: &ProviderAdapterKind,
-    house_root: &PathBuf,
-    provider_prompt: &str,
-) -> Result<String, String> {
-    match adapter {
-        ProviderAdapterKind::CodexCli => run_codex_exec(house_root, provider_prompt),
-        ProviderAdapterKind::Unsupported(provider) => {
-            Err(format!("provider adapter not implemented yet: {provider}"))
-        }
-    }
-}
-
-fn run_codex_exec(house_root: &PathBuf, provider_prompt: &str) -> Result<String, String> {
-    let output_path =
-        std::env::temp_dir().join(format!("jimi-codex-output-{}.txt", uuid::Uuid::now_v7()));
-
-    let status = Command::new("codex")
-        .arg("exec")
-        .arg("--skip-git-repo-check")
-        .arg("--sandbox")
-        .arg("workspace-write")
-        .arg("-a")
-        .arg("never")
-        .arg("--output-last-message")
-        .arg(&output_path)
-        .arg("--cd")
-        .arg(house_root)
-        .arg(provider_prompt)
-        .status()
-        .map_err(|error| error.to_string())?;
-
-    if !status.success() {
-        let _ = std::fs::remove_file(&output_path);
-        return Err(format!("codex exec failed with status {}", status));
-    }
-
-    let output = std::fs::read_to_string(&output_path).map_err(|error| error.to_string())?;
-    let _ = std::fs::remove_file(output_path);
-    Ok(output.trim().to_string())
 }
 
 fn slugify_room_id(title: &str) -> String {
