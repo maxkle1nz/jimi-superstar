@@ -65,6 +65,16 @@ pub struct CapsuleRecord {
     pub installed_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderLaneRecord {
+    pub provider_lane_id: String,
+    pub provider: String,
+    pub model: String,
+    pub routing_mode: String,
+    pub status: String,
+    pub connected_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct EventStore {
     events: Vec<EventEnvelope>,
@@ -397,6 +407,48 @@ impl FieldVaultRuntime {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct ProviderLaneRegistry {
+    lanes: BTreeMap<String, ProviderLaneRecord>,
+}
+
+impl ProviderLaneRegistry {
+    pub fn connect(
+        &mut self,
+        provider_lane_id: impl Into<String>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        routing_mode: impl Into<String>,
+        status: impl Into<String>,
+    ) -> ProviderLaneRecord {
+        let lane = ProviderLaneRecord {
+            provider_lane_id: provider_lane_id.into(),
+            provider: provider.into(),
+            model: model.into(),
+            routing_mode: routing_mode.into(),
+            status: status.into(),
+            connected_at: Utc::now(),
+        };
+        self.lanes
+            .insert(lane.provider_lane_id.clone(), lane.clone());
+        lane
+    }
+
+    pub fn all(&self) -> Vec<&ProviderLaneRecord> {
+        self.lanes.values().collect()
+    }
+
+    pub fn get(&self, provider_lane_id: &str) -> Result<&ProviderLaneRecord, KernelError> {
+        self.lanes
+            .get(provider_lane_id)
+            .ok_or_else(|| KernelError::LaneNotFound(provider_lane_id.into()))
+    }
+
+    pub fn insert_existing(&mut self, lane: ProviderLaneRecord) {
+        self.lanes.insert(lane.provider_lane_id.clone(), lane);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HouseInventory {
     pub sessions: usize,
@@ -407,6 +459,7 @@ pub struct HouseInventory {
     pub capsules: usize,
     pub slots: usize,
     pub fieldvault_artifacts: usize,
+    pub provider_lanes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -417,6 +470,7 @@ pub struct HouseRuntime {
     pub capsules: CapsuleRegistry,
     pub slots: SlotRegistry,
     pub fieldvault: FieldVaultRuntime,
+    pub providers: ProviderLaneRegistry,
 }
 
 impl HouseRuntime {
@@ -453,6 +507,7 @@ impl HouseRuntime {
             capsules: self.capsules.all().len(),
             slots: self.slots.all().len(),
             fieldvault_artifacts: self.fieldvault.all().len(),
+            provider_lanes: self.providers.all().len(),
         }
     }
 }
@@ -610,6 +665,13 @@ mod tests {
             true,
             false,
         );
+        runtime.providers.connect(
+            "provider.codex.primary",
+            "codex",
+            "gpt-5",
+            "primary",
+            "connected",
+        );
 
         let db_path = temp_db_path();
         let mut store = DurableStore::open(&db_path).unwrap();
@@ -623,6 +685,7 @@ mod tests {
         assert_eq!(restored.capsules.all().len(), 1);
         assert_eq!(restored.slots.all().len(), 1);
         assert_eq!(restored.fieldvault.all().len(), 1);
+        assert_eq!(restored.providers.all().len(), 1);
 
         let _ = std::fs::remove_file(db_path);
     }

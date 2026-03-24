@@ -65,6 +65,15 @@ struct ArtifactBootstrapResponse {
     seal_level: SealLevel,
 }
 
+#[derive(Debug, Serialize)]
+struct ProviderBootstrapResponse {
+    provider_lane_id: String,
+    provider: String,
+    model: String,
+    routing_mode: String,
+    status: String,
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("JIMI_DB_PATH")
@@ -91,8 +100,10 @@ async fn main() {
         .route("/capsules", get(list_capsules))
         .route("/slots", get(list_slots))
         .route("/artifacts", get(list_artifacts))
+        .route("/providers", get(list_providers))
         .route("/bootstrap/core-capsule", post(bootstrap_core_capsule))
         .route("/bootstrap/core-artifact", post(bootstrap_core_artifact))
+        .route("/bootstrap/provider-lane", post(bootstrap_provider_lane))
         .route("/events", get(list_events))
         .route("/ws/events", get(ws_events))
         .route("/inventory", get(inventory))
@@ -174,6 +185,11 @@ async fn list_slots(State(state): State<AppState>) -> Json<Vec<jimi_kernel::Pers
 async fn list_artifacts(State(state): State<AppState>) -> Json<Vec<FieldVaultArtifact>> {
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     Json(runtime.fieldvault.all().into_iter().cloned().collect())
+}
+
+async fn list_providers(State(state): State<AppState>) -> Json<Vec<jimi_kernel::ProviderLaneRecord>> {
+    let runtime = state.runtime.lock().expect("runtime lock poisoned");
+    Json(runtime.providers.all().into_iter().cloned().collect())
 }
 
 async fn inventory(State(state): State<AppState>) -> Json<InventoryResponse> {
@@ -373,6 +389,61 @@ async fn bootstrap_core_artifact(
             capsule_id: artifact.capsule_id,
             slot_id: artifact.slot_id,
             seal_level: artifact.seal_level,
+        }),
+    ))
+}
+
+async fn bootstrap_provider_lane(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ProviderBootstrapResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+
+    let provider = runtime.providers.connect(
+        "provider.codex.primary",
+        "codex",
+        "gpt-5",
+        "primary",
+        "connected",
+    );
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: provider.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "provider_lane_id": provider.provider_lane_id.clone(),
+            "provider": provider.provider.clone(),
+            "model": provider.model.clone(),
+            "routing_mode": provider.routing_mode.clone(),
+            "status": provider.status.clone(),
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ProviderBootstrapResponse {
+            provider_lane_id: provider.provider_lane_id,
+            provider: provider.provider,
+            model: provider.model,
+            routing_mode: provider.routing_mode,
+            status: provider.status,
         }),
     ))
 }
@@ -732,10 +803,15 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
               <button id="seal-core">Seal Core Artifact</button>
               <div class="small" id="seal-status">awaiting fieldvault</div>
             </div>
+            <div class="action-row">
+              <button id="bootstrap-provider">Connect Provider Lane</button>
+              <div class="small" id="provider-status">awaiting engine lane</div>
+            </div>
             <div class="list" id="mandala-list"></div>
             <div class="list" id="capsule-list"></div>
             <div class="list" id="slot-list"></div>
             <div class="list" id="artifact-list"></div>
+            <div class="list" id="provider-list"></div>
           </div>
         </div>
 
@@ -757,10 +833,13 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const capsuleListEl = document.getElementById('capsule-list');
       const slotListEl = document.getElementById('slot-list');
       const artifactListEl = document.getElementById('artifact-list');
+      const providerListEl = document.getElementById('provider-list');
       const bootstrapButtonEl = document.getElementById('bootstrap-core');
       const bootstrapStatusEl = document.getElementById('bootstrap-status');
       const sealButtonEl = document.getElementById('seal-core');
       const sealStatusEl = document.getElementById('seal-status');
+      const providerButtonEl = document.getElementById('bootstrap-provider');
+      const providerStatusEl = document.getElementById('provider-status');
 
       const state = {
         sessions: [],
@@ -768,7 +847,8 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         mandalas: [],
         capsules: [],
         slots: [],
-        artifacts: []
+        artifacts: [],
+        providers: []
       };
 
       function renderInventory(data) {
@@ -780,6 +860,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           ['capsules', inventory.capsules ?? 0],
           ['slots', inventory.slots ?? 0],
           ['fieldvault', inventory.fieldvault_artifacts ?? 0],
+          ['providers', inventory.provider_lanes ?? 0],
         ];
         statsEl.innerHTML = items.map(([label, value]) => `
           <div class="stat">
@@ -883,6 +964,22 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         `).join('');
       }
 
+      function renderProviders() {
+        if (!state.providers.length) {
+          providerListEl.innerHTML = '<div class="empty">No provider lanes connected yet.</div>';
+          return;
+        }
+        providerListEl.innerHTML = state.providers.map(provider => `
+          <div class="card">
+            <strong>${escapeHtml(provider.provider_lane_id)}</strong>
+            <div class="meta">provider: ${escapeHtml(provider.provider)}</div>
+            <div class="meta">model: ${escapeHtml(provider.model)}</div>
+            <div class="meta">routing: ${escapeHtml(provider.routing_mode)}</div>
+            <div class="meta">status: ${escapeHtml(provider.status)}</div>
+          </div>
+        `).join('');
+      }
+
       async function refreshInventory() {
         const res = await fetch('/inventory');
         const data = await res.json();
@@ -917,6 +1014,12 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         const res = await fetch('/artifacts');
         state.artifacts = await res.json();
         renderArtifacts();
+      }
+
+      async function refreshProviders() {
+        const res = await fetch('/providers');
+        state.providers = await res.json();
+        renderProviders();
       }
 
       async function refreshEvents() {
@@ -970,6 +1073,18 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         await Promise.all([refreshInventory(), refreshArtifacts(), refreshEvents()]);
       }
 
+      async function bootstrapProviderLane() {
+        providerStatusEl.textContent = 'connecting provider lane…';
+        const res = await fetch('/bootstrap/provider-lane', { method: 'POST' });
+        if (!res.ok) {
+          providerStatusEl.textContent = 'provider lane failed';
+          throw new Error('failed to bootstrap provider lane');
+        }
+        const result = await res.json();
+        providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
+        await Promise.all([refreshInventory(), refreshProviders(), refreshEvents()]);
+      }
+
       function connectEvents() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${location.host}/ws/events`);
@@ -992,6 +1107,9 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             } else if (event.event_type === 'artifact_created') {
               refreshInventory().catch(console.error);
               refreshArtifacts().catch(console.error);
+            } else if (event.event_type === 'engine_selected') {
+              refreshInventory().catch(console.error);
+              refreshProviders().catch(console.error);
             }
           } catch (error) {
             console.error(error);
@@ -1038,6 +1156,14 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
       });
 
+      providerButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapProviderLane();
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replaceAll('&', '&amp;')
@@ -1054,6 +1180,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         refreshCapsules(),
         refreshSlots(),
         refreshArtifacts(),
+        refreshProviders(),
         refreshEvents()
       ])
         .then(connectEvents)

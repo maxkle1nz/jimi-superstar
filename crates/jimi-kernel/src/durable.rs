@@ -6,7 +6,8 @@ use thiserror::Error;
 
 use crate::{
     CapsuleRecord, EventEnvelope, FieldVaultArtifact, HouseRuntime, KernelError, LaneId,
-    LaneRecord, MandalaManifest, PersonalitySlot, SessionId, SessionRecord, TurnId, TurnRecord,
+    LaneRecord, MandalaManifest, PersonalitySlot, ProviderLaneRecord, SessionId, SessionRecord,
+    TurnId, TurnRecord,
 };
 
 #[derive(Debug, Error)]
@@ -111,6 +112,15 @@ impl DurableStore {
               machine_bound INTEGER NOT NULL,
               sha256 TEXT,
               plaintext_projection_ref TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS provider_lanes (
+              provider_lane_id TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              model TEXT NOT NULL,
+              routing_mode TEXT NOT NULL,
+              status TEXT NOT NULL,
+              connected_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -235,6 +245,21 @@ impl DurableStore {
                     artifact.machine_bound as i64,
                     artifact.sha256,
                     artifact.plaintext_projection_ref,
+                ],
+            )?;
+        }
+
+        for provider in runtime.providers.all() {
+            tx.execute(
+                "INSERT OR REPLACE INTO provider_lanes (provider_lane_id, provider, model, routing_mode, status, connected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    provider.provider_lane_id,
+                    provider.provider,
+                    provider.model,
+                    provider.routing_mode,
+                    provider.status,
+                    provider.connected_at.to_rfc3339(),
                 ],
             )?;
         }
@@ -471,6 +496,33 @@ impl DurableStore {
                     machine_bound: machine_bound != 0,
                     sha256,
                     plaintext_projection_ref,
+                });
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT provider_lane_id, provider, model, routing_mode, status, connected_at FROM provider_lanes",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            for row in rows {
+                let (provider_lane_id, provider, model, routing_mode, status, connected_at) = row?;
+                runtime.providers.insert_existing(ProviderLaneRecord {
+                    provider_lane_id,
+                    provider,
+                    model,
+                    routing_mode,
+                    status,
+                    connected_at: parse_dt(&connected_at)?,
                 });
             }
         }
