@@ -586,6 +586,23 @@ impl CapsulePackageRegistry {
         Ok(package.clone())
     }
 
+    pub fn upgrade(
+        &mut self,
+        package_id: &str,
+        version: u32,
+        package_digest: impl Into<String>,
+        install_status: impl Into<String>,
+    ) -> Result<CapsulePackageRecord, KernelError> {
+        let package = self
+            .packages
+            .get_mut(package_id)
+            .ok_or_else(|| KernelError::CapsuleNotFound(package_id.into()))?;
+        package.version = version;
+        package.package_digest = package_digest.into();
+        package.install_status = install_status.into();
+        Ok(package.clone())
+    }
+
     pub fn insert_existing(&mut self, package: CapsulePackageRecord) {
         self.packages.insert(package.package_id.clone(), package);
     }

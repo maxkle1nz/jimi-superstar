@@ -366,6 +366,15 @@ struct CapsuleUninstallResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CapsuleUpgradeResponse {
+    package_id: String,
+    capsule_id: String,
+    version: u32,
+    package_digest: String,
+    install_status: String,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryPolicyUpdateResponse {
     mandala_id: String,
     memory_policy: MandalaMemoryPolicy,
@@ -528,6 +537,10 @@ async fn main() {
         .route(
             "/capsule-packages/{package_id}/uninstall",
             post(uninstall_capsule_package),
+        )
+        .route(
+            "/capsule-packages/{package_id}/upgrade",
+            post(upgrade_capsule_package),
         )
         .route(
             "/capsule-packages/{package_id}/export",
@@ -2917,6 +2930,71 @@ async fn uninstall_capsule_package(
             capsule_id: updated_package.capsule_id,
             install_status: updated_package.install_status,
             had_active_slot: active_slot.is_some(),
+        }),
+    ))
+}
+
+async fn upgrade_capsule_package(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleUpgradeResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    let next_version = package.version + 1;
+    let next_digest = format!("{}.v{}", package.package_digest, next_version);
+    let next_status = if package.install_status == "installed" {
+        "update_available"
+    } else {
+        "upgrade_ready"
+    };
+    let updated_package = runtime
+        .capsule_packages
+        .upgrade(&package_id, next_version, next_digest.clone(), next_status)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.marketplace".into(),
+        },
+        SubjectRef {
+            subject_type: "capsule_package".into(),
+            subject_id: updated_package.package_id.clone(),
+        },
+        EventType::CapsuleMarketplaceListed,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": updated_package.package_id,
+            "capsule_id": updated_package.capsule_id,
+            "version": updated_package.version,
+            "package_digest": updated_package.package_digest,
+            "install_status": updated_package.install_status,
+            "change_kind": "upgraded",
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(CapsuleUpgradeResponse {
+            package_id: updated_package.package_id,
+            capsule_id: updated_package.capsule_id,
+            version: updated_package.version,
+            package_digest: updated_package.package_digest,
+            install_status: updated_package.install_status,
         }),
     ))
 }
@@ -5555,6 +5633,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="card">
               <strong>${escapeHtml(entry.display_name || entry.package_id)}</strong>
               <div class="meta">package: ${escapeHtml(entry.package_id)}</div>
+              <div class="meta">version: ${escapeHtml(entry.version)}</div>
               <div class="meta">creator: ${escapeHtml(entry.creator)}</div>
               <div class="meta">source: ${escapeHtml(entry.source_origin)}</div>
               <div class="meta">trust: ${escapeHtml(entry.trust_level)}</div>
@@ -5565,6 +5644,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
                 <button onclick="activateCapsulePackage('${escapeHtml(entry.package_id)}')">Activate</button>
                 <button onclick="deactivateCapsulePackage('${escapeHtml(entry.package_id)}')">Deactivate</button>
                 <button onclick="uninstallCapsulePackage('${escapeHtml(entry.package_id)}')">Uninstall</button>
+                <button onclick="upgradeCapsulePackage('${escapeHtml(entry.package_id)}')">Upgrade</button>
                 <button onclick="exportCapsulePackage('${escapeHtml(entry.package_id)}')">Export</button>
               </div>
             </div>
@@ -6484,6 +6564,27 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
           refreshInventory(),
           refreshMacroStatus(),
           refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function upgradeCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for upgrade');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/upgrade`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to upgrade capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
           refreshEvents()
         ]);
         await previewCapsulePackage(packageId);
