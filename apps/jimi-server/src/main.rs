@@ -350,6 +350,14 @@ struct CapsuleActivationResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CapsuleDeactivationResponse {
+    package_id: String,
+    capsule_id: String,
+    slot_id: String,
+    slot_state: SlotBindingState,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryPolicyUpdateResponse {
     mandala_id: String,
     memory_policy: MandalaMemoryPolicy,
@@ -504,6 +512,10 @@ async fn main() {
         .route(
             "/capsule-packages/{package_id}/activate",
             post(activate_capsule_package),
+        )
+        .route(
+            "/capsule-packages/{package_id}/deactivate",
+            post(deactivate_capsule_package),
         )
         .route(
             "/capsule-packages/{package_id}/export",
@@ -2745,6 +2757,84 @@ async fn activate_capsule_package(
             mandala_id: updated_package.mandala_id,
             slot_id: slot.slot_id,
             slot_state: slot.state,
+        }),
+    ))
+}
+
+async fn deactivate_capsule_package(
+    Path(package_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<CapsuleDeactivationResponse>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let package = runtime
+        .capsule_packages
+        .get(&package_id)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .clone();
+
+    let slot = runtime
+        .slots
+        .all()
+        .into_iter()
+        .find(|slot| slot.capsule_id.as_deref() == Some(package.capsule_id.as_str()))
+        .map(|slot| slot.slot_id.clone())
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                format!("package {} is not active in any slot", package.package_id),
+            )
+        })?;
+
+    runtime
+        .slots
+        .unbind(&slot)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let updated_package = runtime
+        .capsule_packages
+        .update_install_status(&package_id, "available")
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+    let slot_state = runtime
+        .slots
+        .get(&slot)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?
+        .state;
+
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "cockpit.marketplace".into(),
+        },
+        SubjectRef {
+            subject_type: "slot".into(),
+            subject_id: slot.clone(),
+        },
+        EventType::SlotActivated,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "package_id": updated_package.package_id,
+            "capsule_id": updated_package.capsule_id,
+            "slot_id": slot,
+            "slot_state": slot_state,
+            "change_kind": "deactivated",
+        }),
+    );
+
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(CapsuleDeactivationResponse {
+            package_id: updated_package.package_id,
+            capsule_id: updated_package.capsule_id,
+            slot_id: slot,
+            slot_state,
         }),
     ))
 }
@@ -5391,6 +5481,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
                 <button onclick="previewCapsulePackage('${escapeHtml(entry.package_id)}')">Preview</button>
                 <button onclick="requestCapsuleInstall('${escapeHtml(entry.package_id)}')">Install</button>
                 <button onclick="activateCapsulePackage('${escapeHtml(entry.package_id)}')">Activate</button>
+                <button onclick="deactivateCapsulePackage('${escapeHtml(entry.package_id)}')">Deactivate</button>
                 <button onclick="exportCapsulePackage('${escapeHtml(entry.package_id)}')">Export</button>
               </div>
             </div>
@@ -6255,6 +6346,29 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         });
         if (!res.ok) {
           throw new Error('failed to activate capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshSlots(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function deactivateCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for deactivation');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/deactivate`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to deactivate capsule package');
         }
         await Promise.all([
           refreshCapsulePackages(),

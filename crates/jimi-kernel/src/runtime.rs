@@ -724,6 +724,18 @@ impl SlotRegistry {
         Ok(())
     }
 
+    pub fn unbind(&mut self, slot_id: &str) -> Result<(), KernelError> {
+        let slot = self
+            .slots
+            .get_mut(slot_id)
+            .ok_or_else(|| KernelError::SlotNotFound(slot_id.into()))?;
+        slot.capsule_id = None;
+        slot.active_mandala_id = None;
+        slot.unlock_required = false;
+        slot.state = SlotBindingState::Empty;
+        Ok(())
+    }
+
     pub fn get(&self, slot_id: &str) -> Result<&PersonalitySlot, KernelError> {
         self.slots
             .get(slot_id)
