@@ -729,6 +729,24 @@ impl MemoryCapsuleRegistry {
         capsules.truncate(limit);
         capsules
     }
+
+    pub fn query_room(&self, room_id: &str, query: &str, limit: usize) -> Vec<MemoryCapsuleRecord> {
+        let lowered_query = query.to_lowercase();
+        let mut capsules: Vec<MemoryCapsuleRecord> = self
+            .capsules
+            .values()
+            .filter(|capsule| capsule.room_id == room_id)
+            .cloned()
+            .collect();
+
+        capsules.sort_by(|a, b| {
+            score_capsule_for_query(b, &lowered_query)
+                .partial_cmp(&score_capsule_for_query(a, &lowered_query))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        capsules.truncate(limit);
+        capsules
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1240,6 +1258,22 @@ impl HouseRuntime {
         limit: usize,
     ) -> Vec<MemoryCapsuleRecord> {
         self.memory_capsules.query_session(session_id, query, limit)
+    }
+
+    pub fn query_memory_with_room(
+        &self,
+        session_id: &SessionId,
+        room_id: &str,
+        query: &str,
+        session_limit: usize,
+        room_limit: usize,
+    ) -> (Vec<MemoryCapsuleRecord>, Vec<MemoryCapsuleRecord>) {
+        let session_capsules = self
+            .memory_capsules
+            .query_session(session_id, query, session_limit);
+        let mut room_capsules = self.memory_capsules.query_room(room_id, query, room_limit);
+        room_capsules.retain(|capsule| capsule.session_id.0 != session_id.0);
+        (session_capsules, room_capsules)
     }
 
     pub fn active_memory_policy(&self) -> Option<crate::mandala::MandalaMemoryPolicy> {

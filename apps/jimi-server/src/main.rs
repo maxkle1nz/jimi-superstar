@@ -170,6 +170,7 @@ struct ContextPacketResponse {
     memory_policy: MandalaMemoryPolicy,
     hot_capsules: Vec<MemoryCapsuleRecord>,
     relevant_capsules: Vec<MemoryCapsuleRecord>,
+    room_relevant_capsules: Vec<MemoryCapsuleRecord>,
     summary_checkpoints: Vec<SummaryCheckpointRecord>,
     memory_bridges: Vec<MemoryBridgeRecord>,
     resynthesis_triggers: Vec<ResynthesisTriggerRecord>,
@@ -528,10 +529,17 @@ fn assemble_context_packet(
         .or_else(|| hot_capsules.last().map(|capsule| capsule.content.clone()))
         .unwrap_or_default();
 
-    let relevant_capsules = runtime.query_memory(
+    let room_id = runtime
+        .sessions
+        .session(session_id)
+        .map(|session| session.room_id.clone())
+        .unwrap_or_default();
+    let (relevant_capsules, room_relevant_capsules) = runtime.query_memory_with_room(
         session_id,
+        &room_id,
         &query_seed,
         memory_policy.relevant_context_limit.max(1),
+        4,
     );
 
     let summary_checkpoints = runtime
@@ -591,15 +599,12 @@ fn assemble_context_packet(
 
     ContextPacketResponse {
         session_id: session_id.0.clone(),
-        room_id: runtime
-            .sessions
-            .session(session_id)
-            .map(|session| session.room_id.clone())
-            .unwrap_or_default(),
+        room_id,
         active_mandala_id,
         memory_policy,
         hot_capsules,
         relevant_capsules,
+        room_relevant_capsules,
         summary_checkpoints,
         memory_bridges,
         resynthesis_triggers,
@@ -626,6 +631,12 @@ fn build_provider_prompt(
         .relevant_capsules
         .iter()
         .map(|capsule| format!("- score={:.2} {}", capsule.relevance_score, capsule.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let room_relevant_context = packet
+        .room_relevant_capsules
+        .iter()
+        .map(|capsule| format!("- [{}] {}", capsule.room_id, capsule.content))
         .collect::<Vec<_>>()
         .join("\n");
     let summaries = packet
@@ -678,6 +689,7 @@ fn build_provider_prompt(
             "Stable rules: {stable_rules}\n\n",
             "Hot capsules:\n{hot_context}\n\n",
             "Relevant memory:\n{relevant_context}\n\n",
+            "Room memory:\n{room_relevant_context}\n\n",
             "Summaries:\n{summaries}\n\n",
             "Return only the answer for this turn. Do not explain the packet."
         ),
@@ -731,6 +743,11 @@ fn build_provider_prompt(
             "- none".into()
         } else {
             relevant_context
+        },
+        room_relevant_context = if room_relevant_context.is_empty() {
+            "- none".into()
+        } else {
+            room_relevant_context
         },
         summaries = if summaries.is_empty() {
             "- none".into()
@@ -2145,6 +2162,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="small" id="context-status">awaiting context packet</div>
             <div class="list" id="memory-capsule-list"></div>
             <div class="list" id="memory-relevance-list"></div>
+            <div class="list" id="room-memory-relevance-list"></div>
             <div class="list" id="summary-list"></div>
             <div class="list" id="bridge-list"></div>
             <div class="list" id="trigger-list"></div>
@@ -2190,6 +2208,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
       const contextStatusEl = document.getElementById('context-status');
       const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
       const memoryRelevanceListEl = document.getElementById('memory-relevance-list');
+      const roomMemoryRelevanceListEl = document.getElementById('room-memory-relevance-list');
       const summaryListEl = document.getElementById('summary-list');
       const bridgeListEl = document.getElementById('bridge-list');
       const triggerListEl = document.getElementById('trigger-list');
@@ -2488,6 +2507,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         if (!state.contextPacket) {
           contextPacketViewEl.innerHTML = '<div class="empty">No context packet loaded yet.</div>';
           memoryRelevanceListEl.innerHTML = '<div class="empty">No ranked memory candidates yet.</div>';
+          roomMemoryRelevanceListEl.innerHTML = '<div class="empty">No room-scoped memory candidates yet.</div>';
           bridgeListEl.innerHTML = '<div class="empty">No memory bridges yet.</div>';
           triggerListEl.innerHTML = '<div class="empty">No re-synthesis triggers yet.</div>';
           promotionListEl.innerHTML = '<div class="empty">No memory promotions yet.</div>';
@@ -2495,6 +2515,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
         }
         const packet = state.contextPacket;
         const relevant = packet.relevant_capsules || [];
+        const roomRelevant = packet.room_relevant_capsules || [];
         const bridges = packet.memory_bridges || [];
         const triggers = packet.resynthesis_triggers || [];
         const promotions = packet.memory_promotions || [];
@@ -2508,6 +2529,16 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             </div>
           `).join('')
           : '<div class="empty">No ranked memory candidates yet.</div>';
+        roomMemoryRelevanceListEl.innerHTML = roomRelevant.length
+          ? roomRelevant.map(capsule => `
+            <div class="card">
+              <strong>room relevant / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">room: ${escapeHtml(capsule.room_id)}</div>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No room-scoped memory candidates yet.</div>';
         bridgeListEl.innerHTML = bridges.length
           ? bridges.map(bridge => `
             <div class="card">
@@ -2546,6 +2577,7 @@ const COCKPIT_HTML: &str = r#"<!doctype html>
             <div class="meta">query seed: ${escapeHtml(packet.query_seed || 'none')}</div>
             <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
             <div class="meta">relevant capsules: ${escapeHtml((packet.relevant_capsules || []).length)}</div>
+            <div class="meta">room capsules: ${escapeHtml((packet.room_relevant_capsules || []).length)}</div>
             <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
             <div class="meta">bridges: ${escapeHtml((packet.memory_bridges || []).length)}</div>
             <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
