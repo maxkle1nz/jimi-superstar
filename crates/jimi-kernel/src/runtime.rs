@@ -671,6 +671,19 @@ impl TurnDispatchRegistry {
         Ok(dispatch.clone())
     }
 
+    pub fn update_provider_lane(
+        &mut self,
+        dispatch_id: &str,
+        provider_lane_id: impl Into<String>,
+    ) -> Result<TurnDispatchRecord, KernelError> {
+        let dispatch = self
+            .dispatches
+            .get_mut(dispatch_id)
+            .ok_or_else(|| KernelError::TurnNotFound(dispatch_id.into()))?;
+        dispatch.provider_lane_id = provider_lane_id.into();
+        Ok(dispatch.clone())
+    }
+
     pub fn insert_existing(&mut self, dispatch: TurnDispatchRecord) {
         self.dispatches
             .insert(dispatch.dispatch_id.clone(), dispatch);

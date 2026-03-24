@@ -30,7 +30,10 @@ use jimi_kernel::{
     TurnRecord, WorldStateDeltaRecord, WorldStateNodeRecord,
     WorldStateProcessEntry, WorldStateSlice, WorldStateWorkspaceEntry,
 };
-use provider_adapter::{provider_adapter_label, resolve_provider_adapter, run_provider_adapter};
+use provider_adapter::{
+    fallback_candidates, provider_adapter_label, resolve_provider_adapter, run_provider_adapter,
+    ProviderExecutionError,
+};
 use provider_auth::{detect_provider_credentials, ProviderCredentialStatus};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
@@ -1725,68 +1728,160 @@ async fn run_latest_dispatch_live_once(
         )
     };
 
-    let adapter = resolve_provider_adapter(&provider_lane);
-    let adapter_label = provider_adapter_label(&adapter).to_string();
-    let provider_lane_for_execution = provider_lane.clone();
-    let adapter_for_execution = adapter.clone();
-    let output_result = tokio::task::spawn_blocking(move || {
-        run_provider_adapter(
-            &provider_lane_for_execution,
-            &adapter_for_execution,
-            &house_root,
-            &provider_prompt,
-        )
-    })
-    .await
-    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    let output_text = match output_result {
-        Ok(output) => output,
-        Err(error) => {
+    let ready_providers = ready_provider_names();
+    let all_provider_lanes = {
+        let runtime = state.runtime.lock().map_err(internal_lock_error)?;
+        runtime
+            .providers
+            .all()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let mut provider_attempts = vec![provider_lane.clone()];
+    provider_attempts.extend(fallback_candidates(
+        &provider_lane,
+        &all_provider_lanes,
+        &ready_providers,
+    ));
+
+    let mut executing_lane = provider_lane.clone();
+    let mut output_text = None;
+    let mut last_error: Option<ProviderExecutionError> = None;
+    let mut fallback_from: Option<String> = None;
+
+    for (attempt_index, candidate_lane) in provider_attempts.into_iter().enumerate() {
+        let adapter = resolve_provider_adapter(&candidate_lane);
+        let adapter_label = provider_adapter_label(&adapter).to_string();
+        let provider_lane_for_execution = candidate_lane.clone();
+        let adapter_for_execution = adapter.clone();
+        let prompt_for_execution = provider_prompt.clone();
+        let root_for_execution = house_root.clone();
+        let output_result = tokio::task::spawn_blocking(move || {
+            run_provider_adapter(
+                &provider_lane_for_execution,
+                &adapter_for_execution,
+                &root_for_execution,
+                &prompt_for_execution,
+            )
+        })
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+
+        match output_result {
+            Ok(output) => {
+                if candidate_lane.provider_lane_id != dispatch.provider_lane_id {
+                    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+                    let _ = runtime.dispatches.update_provider_lane(
+                        &dispatch.dispatch_id,
+                        candidate_lane.provider_lane_id.clone(),
+                    );
+                    runtime.events.append(
+                        ActorRef {
+                            actor_type: "provider".into(),
+                            actor_id: candidate_lane.provider_lane_id.clone(),
+                        },
+                        SubjectRef {
+                            subject_type: "dispatch".into(),
+                            subject_id: dispatch.dispatch_id.clone(),
+                        },
+                        EventType::EngineSelected,
+                        Some(&dispatch.session_id),
+                        Some(&dispatch.lane_id),
+                        Some(&dispatch.turn_id),
+                        serde_json::json!({
+                            "dispatch_id": dispatch.dispatch_id,
+                            "attempt_index": attempt_index,
+                            "fallback_from": fallback_from,
+                            "fallback_to": candidate_lane.provider_lane_id,
+                            "provider": candidate_lane.provider,
+                            "model": candidate_lane.model,
+                            "adapter": adapter_label,
+                            "selection_score": selection_score,
+                            "selection_reason": selection_reason,
+                        }),
+                    );
+                    let new_event = runtime.events.all().last().cloned();
+                    persist_runtime(&state, &runtime)?;
+                    drop(runtime);
+                    if let Some(event) = new_event {
+                        let _ = state.events_tx.send(event);
+                    }
+                }
+                executing_lane = candidate_lane;
+                output_text = Some(output);
+                break;
+            }
+            Err(error) => {
+                let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+                runtime.events.append(
+                    ActorRef {
+                        actor_type: "provider".into(),
+                        actor_id: candidate_lane.provider_lane_id.clone(),
+                    },
+                    SubjectRef {
+                        subject_type: "dispatch".into(),
+                        subject_id: dispatch.dispatch_id.clone(),
+                    },
+                    EventType::EngineDegraded,
+                    Some(&dispatch.session_id),
+                    Some(&dispatch.lane_id),
+                    Some(&dispatch.turn_id),
+                    serde_json::json!({
+                        "dispatch_id": dispatch.dispatch_id,
+                        "provider_lane_id": candidate_lane.provider_lane_id,
+                        "provider": candidate_lane.provider,
+                        "model": candidate_lane.model,
+                        "adapter": adapter_label,
+                        "failure_class": error.class(),
+                        "attempt_index": attempt_index,
+                        "fallback_from": fallback_from,
+                        "fallback_to": if error.should_fallback() {
+                            Some("next_ready_lane".to_string())
+                        } else {
+                            None::<String>
+                        },
+                        "fallback_exhausted": !error.should_fallback(),
+                        "selection_score": selection_score,
+                        "selection_reason": selection_reason,
+                        "reason": error.message(),
+                    }),
+                );
+                let new_event = runtime.events.all().last().cloned();
+                persist_runtime(&state, &runtime)?;
+                drop(runtime);
+                if let Some(event) = new_event {
+                    let _ = state.events_tx.send(event);
+                }
+
+                fallback_from = Some(candidate_lane.provider_lane_id.clone());
+                last_error = Some(error.clone());
+                if !error.should_fallback() {
+                    break;
+                }
+            }
+        }
+    }
+    let output_text = match output_text {
+        Some(output) => output,
+        None => {
             let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
-            let failed_dispatch = runtime
+            let _failed_dispatch = runtime
                 .dispatches
                 .update_status(&dispatch.dispatch_id, "failed")
                 .map_err(|update_error| (StatusCode::BAD_REQUEST, update_error.to_string()))?;
-            let failed_turn = runtime
+            let _failed_turn = runtime
                 .sessions
                 .update_turn_state(&dispatch.turn_id, jimi_kernel::TurnState::Failed)
                 .map_err(|update_error| (StatusCode::BAD_REQUEST, update_error.to_string()))?;
-
-            runtime.events.append(
-                ActorRef {
-                    actor_type: "provider".into(),
-                    actor_id: provider_lane.provider_lane_id.clone(),
-                },
-                SubjectRef {
-                    subject_type: "dispatch".into(),
-                    subject_id: failed_dispatch.dispatch_id.clone(),
-                },
-                EventType::EngineDegraded,
-                Some(&failed_dispatch.session_id),
-                Some(&failed_dispatch.lane_id),
-                Some(&failed_turn.turn_id),
-                serde_json::json!({
-                    "dispatch_id": failed_dispatch.dispatch_id,
-                    "provider_lane_id": failed_dispatch.provider_lane_id,
-                    "provider": provider_lane.provider,
-                    "model": provider_lane.model,
-                    "adapter": adapter_label,
-                    "selection_score": selection_score,
-                    "selection_reason": selection_reason,
-                    "status": "failed",
-                    "reason": error,
-                }),
-            );
-
-            let new_event = runtime.events.all().last().cloned();
             persist_runtime(&state, &runtime)?;
             drop(runtime);
-
-            if let Some(event) = new_event {
-                let _ = state.events_tx.send(event);
-            }
-
-            return Err((StatusCode::BAD_GATEWAY, error));
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                last_error
+                    .map(|error| error.message().to_string())
+                    .unwrap_or_else(|| "all provider attempts failed".to_string()),
+            ));
         }
     };
     let compacted_response = compact_provider_response(&output_text);
@@ -1825,7 +1920,7 @@ async fn run_latest_dispatch_live_once(
     runtime.events.append(
         ActorRef {
             actor_type: "provider".into(),
-            actor_id: provider_lane.provider_lane_id.clone(),
+            actor_id: executing_lane.provider_lane_id.clone(),
         },
         SubjectRef {
             subject_type: "turn".into(),
@@ -1838,12 +1933,14 @@ async fn run_latest_dispatch_live_once(
         serde_json::json!({
             "dispatch_id": completed_dispatch.dispatch_id.clone(),
             "provider_lane_id": completed_dispatch.provider_lane_id.clone(),
+            "provider": executing_lane.provider.clone(),
+            "model": executing_lane.model.clone(),
             "output_text": output_text.clone(),
             "memory_text": compacted_response.memory_text.clone(),
             "raw_output_length": compacted_response.raw_length,
             "compacted_output_length": compacted_response.compacted_length,
             "status": "completed",
-            "mode": "live_codex",
+            "mode": provider_adapter_label(&resolve_provider_adapter(&executing_lane)),
         }),
     );
 
@@ -2324,6 +2421,14 @@ fn provider_credential_status(provider: &str) -> Option<ProviderCredentialStatus
     detect_provider_credentials()
         .into_iter()
         .find(|status| status.provider == provider)
+}
+
+fn ready_provider_names() -> Vec<String> {
+    detect_provider_credentials()
+        .into_iter()
+        .filter(|status| status.ready)
+        .map(|status| status.provider)
+        .collect()
 }
 
 fn build_macro_status(inventory: &HouseInventory) -> MacroStatusResponse {
