@@ -579,6 +579,18 @@ async fn main() {
             "/bootstrap/provider-lane-copilot",
             post(bootstrap_copilot_lane),
         )
+        .route(
+            "/bootstrap/provider-lane-copilot-gpt5",
+            post(bootstrap_copilot_gpt5_lane),
+        )
+        .route(
+            "/bootstrap/provider-lane-copilot-claude",
+            post(bootstrap_copilot_claude_lane),
+        )
+        .route(
+            "/bootstrap/provider-lane-model",
+            post(bootstrap_model_lane),
+        )
         .route("/inventory", get(inventory))
         .route("/graph/ingest", post(graph_ingest))
         .route("/graph/activate", post(graph_activate))
@@ -4438,6 +4450,7 @@ async fn handle_ws_chat(mut socket: WebSocket, state: AppState) {
             .as_str()
             .unwrap_or(&user_text)
             .to_string();
+        let requested_model = parsed["model"].as_str().map(|s| s.to_string());
 
         if user_message.trim().is_empty() {
             continue;
@@ -4511,12 +4524,22 @@ async fn handle_ws_chat(mut socket: WebSocket, state: AppState) {
                 Err(_) => break,
             };
             let provider_candidates = runtime.providers.all();
-            let provider_lane = provider_candidates
-                .iter()
-                .find(|p| p.routing_mode == "primary" && p.status == "connected")
-                .or_else(|| provider_candidates.iter().find(|p| p.status == "connected"))
-                .cloned()
-                .cloned();
+            // If user selected a specific model, find that lane
+            let provider_lane = if let Some(ref model) = requested_model {
+                provider_candidates
+                    .iter()
+                    .find(|p| p.model == *model && p.status == "connected")
+                    .or_else(|| provider_candidates.iter().find(|p| p.status == "connected"))
+                    .cloned()
+                    .cloned()
+            } else {
+                provider_candidates
+                    .iter()
+                    .find(|p| p.routing_mode == "primary" && p.status == "connected")
+                    .or_else(|| provider_candidates.iter().find(|p| p.status == "connected"))
+                    .cloned()
+                    .cloned()
+            };
 
             match provider_lane {
                 Some(lane) => {
@@ -4557,7 +4580,7 @@ async fn handle_ws_chat(mut socket: WebSocket, state: AppState) {
         let root_for_exec = house_root.clone();
 
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(120),
             tokio::task::spawn_blocking(move || {
                 run_provider_adapter(&lane_for_exec, &adapter_for_exec, &root_for_exec, &prompt_for_exec)
             }),
@@ -4568,6 +4591,66 @@ async fn handle_ws_chat(mut socket: WebSocket, state: AppState) {
             Ok(Ok(Ok(text))) => {
                 eprintln!("  ✔ chat: got {} bytes from provider", text.len());
                 text
+            }
+            Ok(Ok(Err(ref err))) if err.class() == "missing_credentials" => {
+                eprintln!("  ⛛ chat: missing credentials — starting device flow for UI");
+                // Try to get a device code and show it in the UI
+                let device_flow_result = tokio::task::spawn_blocking(|| {
+                    provider_adapter::request_copilot_device_code()
+                }).await;
+
+                match device_flow_result {
+                    Ok(Ok(info)) => {
+                        // Send auth_required message to UI with the code
+                        let auth_msg = serde_json::json!({
+                            "type": "auth_required",
+                            "provider": "copilot",
+                            "user_code": info.user_code,
+                            "verification_uri": info.verification_uri,
+                            "message": format!("⛛ Authorization required — go to {} and enter code: {}", info.verification_uri, info.user_code)
+                        }).to_string();
+                        let _ = socket.send(Message::Text(auth_msg.into())).await;
+
+                        // Spawn background polling task — saves token when user authorizes
+                        let device_code = info.device_code.clone();
+                        let interval_secs = info.interval;
+                        tokio::spawn(async move {
+                            for attempt in 0..60u32 {
+                                tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+                                let dc = device_code.clone();
+                                let poll_result = tokio::task::spawn_blocking(move || {
+                                    provider_adapter::poll_copilot_device_auth(&dc)
+                                }).await;
+                                match poll_result {
+                                    Ok(Ok(_token)) => {
+                                        eprintln!("  ⛛ device flow: authorization complete (attempt {})", attempt + 1);
+                                        break;
+                                    }
+                                    Ok(Err(ref e)) if e.message() == "pending" => {
+                                        continue;
+                                    }
+                                    Ok(Err(e)) => {
+                                        eprintln!("  ✘ device flow poll error: {}", e.message());
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("  ✘ device flow task error: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    _ => {
+                        // Could not even start device flow — show original error
+                        let err_msg = serde_json::json!({
+                            "type": "error",
+                            "message": format!("Provider error ({}): {}", err.class(), err.message())
+                        }).to_string();
+                        let _ = socket.send(Message::Text(err_msg.into())).await;
+                    }
+                }
+                continue;
             }
             Ok(Ok(Err(err))) => {
                 eprintln!("  ✘ chat: provider error ({}): {}", err.class(), err.message());
@@ -4590,10 +4673,10 @@ async fn handle_ws_chat(mut socket: WebSocket, state: AppState) {
                 continue;
             }
             Err(_) => {
-                eprintln!("  ✘ chat: provider timed out after 30s");
+                eprintln!("  ✘ chat: provider timed out after 120s");
                 let err_msg = serde_json::json!({
                     "type": "error",
-                    "message": "Provider timed out after 30 seconds"
+                    "message": "Provider timed out after 120 seconds"
                 })
                 .to_string();
                 let _ = socket.send(Message::Text(err_msg.into())).await;
@@ -4705,6 +4788,151 @@ async fn bootstrap_copilot_lane(
             "provider": "copilot",
             "model": "gpt-4o",
             "routing_mode": "primary",
+        }),
+    );
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+    Ok((StatusCode::CREATED, Json(lane)))
+}
+
+async fn bootstrap_copilot_gpt5_lane(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ProviderLaneRecord>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let lane_id = format!("copilot-gpt5-lane-{}", uuid::Uuid::now_v7());
+    let lane = runtime.providers.connect(
+        lane_id,
+        "copilot".to_string(),
+        "gpt-5.4".to_string(),
+        "primary".to_string(),
+        Some("default".to_string()),
+        10,
+        "connected".to_string(),
+    );
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: lane.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "provider": "copilot",
+            "model": "gpt-5.4",
+            "routing_mode": "primary",
+        }),
+    );
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+    Ok((StatusCode::CREATED, Json(lane)))
+}
+
+async fn bootstrap_copilot_claude_lane(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ProviderLaneRecord>), (StatusCode, String)> {
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let lane_id = format!("copilot-claude-lane-{}", uuid::Uuid::now_v7());
+    let lane = runtime.providers.connect(
+        lane_id,
+        "copilot".to_string(),
+        "claude-opus-4.6".to_string(),
+        "secondary".to_string(),
+        Some("default".to_string()),
+        10,
+        "connected".to_string(),
+    );
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: lane.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "provider": "copilot",
+            "model": "claude-opus-4.6",
+            "routing_mode": "secondary",
+        }),
+    );
+    let new_event = runtime.events.all().last().cloned();
+    persist_runtime(&state, &runtime)?;
+    drop(runtime);
+    if let Some(event) = new_event {
+        let _ = state.events_tx.send(event);
+    }
+    Ok((StatusCode::CREATED, Json(lane)))
+}
+
+/// Generic model bootstrap: supports any model from the Copilot API catalog.
+/// POST /bootstrap/provider-lane-model  { "model": "gpt-5.4", "routing_mode": "primary" }
+async fn bootstrap_model_lane(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<(StatusCode, Json<ProviderLaneRecord>), (StatusCode, String)> {
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "missing 'model' field".to_string(),
+            )
+        })?
+        .to_string();
+    let routing_mode = body
+        .get("routing_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("primary")
+        .to_string();
+
+    let mut runtime = state.runtime.lock().map_err(internal_lock_error)?;
+    let lane_id = format!("copilot-{}-lane-{}", model.replace('.', "-"), uuid::Uuid::now_v7());
+    let lane = runtime.providers.connect(
+        lane_id,
+        "copilot".to_string(),
+        model.clone(),
+        routing_mode.clone(),
+        Some("default".to_string()),
+        10,
+        "connected".to_string(),
+    );
+    runtime.events.append(
+        ActorRef {
+            actor_type: "operator".into(),
+            actor_id: "bootstrap".into(),
+        },
+        SubjectRef {
+            subject_type: "provider_lane".into(),
+            subject_id: lane.provider_lane_id.clone(),
+        },
+        EventType::EngineSelected,
+        None,
+        None,
+        None,
+        serde_json::json!({
+            "provider": "copilot",
+            "model": model,
+            "routing_mode": routing_mode,
         }),
     );
     let new_event = runtime.events.all().last().cloned();

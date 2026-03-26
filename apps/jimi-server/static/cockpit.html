@@ -514,6 +514,10 @@
               <button id="bootstrap-provider-copilot">Establish Neural Link [Copilot]</button>
               <div class="small" id="provider-copilot-status">offline</div>
             </div>
+            <div class="action-row">
+              <button id="bootstrap-all-models">Establish All Neural Links ⛛</button>
+              <div class="small" id="all-models-status">offline</div>
+            </div>
             <div class="list" id="mandala-list"></div>
             <div class="list" id="capsule-list"></div>
             <div class="list" id="capsule-preview-view"></div>
@@ -625,6 +629,31 @@
           </div>
           <div id="chat-status" class="small" style="margin: 8px 0;">connecting…</div>
           <form id="chat-form" style="display: flex; gap: 8px; margin-top: 8px;">
+            <select id="chat-model-select" style="
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 11px;
+              background: var(--void, #030304);
+              color: var(--stable-matter, #00ffcc);
+              border: 1px solid var(--resonance, #4a00e0);
+              padding: 8px;
+              min-width: 140px;
+              cursor: pointer;
+            ">
+              <option value="">auto (primary)</option>
+              <option value="gpt-5.4">GPT-5.4</option>
+              <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+              <option value="claude-opus-4.6">Claude Opus 4.6</option>
+              <option value="claude-opus-4.6-fast">Opus 4.6 Fast</option>
+              <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+              <option value="claude-sonnet-4.5">Claude Sonnet 4.5</option>
+              <option value="claude-opus-4.5">Claude Opus 4.5</option>
+              <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
+              <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
+              <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
+              <option value="gpt-5.1-codex-max">GPT-5.1 Codex Max</option>
+              <option value="grok-code-fast-1">Grok Code Fast</option>
+              <option value="gpt-4o">GPT-4o</option>
+            </select>
             <input id="chat-input" placeholder="Speak to the void…" style="flex: 1; font-family: 'JetBrains Mono', monospace;" autocomplete="off" />
             <button type="submit" style="padding: 12px 20px;">⛛</button>
           </form>
@@ -669,6 +698,8 @@
       const providerSecondaryStatusEl = document.getElementById('provider-secondary-status');
       const providerCopilotButtonEl = document.getElementById('bootstrap-provider-copilot');
       const providerCopilotStatusEl = document.getElementById('provider-copilot-status');
+      const bootstrapAllModelsEl = document.getElementById('bootstrap-all-models');
+      const allModelsStatusEl = document.getElementById('all-models-status');
       const chatMessagesEl = document.getElementById('chat-messages');
       const chatInputEl = document.getElementById('chat-input');
       const chatFormEl = document.getElementById('chat-form');
@@ -2400,6 +2431,42 @@
         }
       });
 
+      const ALL_COPILOT_MODELS = [
+        { model: 'gpt-5.4', routing_mode: 'primary' },
+        { model: 'gpt-5.4-mini', routing_mode: 'secondary' },
+        { model: 'claude-opus-4.6', routing_mode: 'primary' },
+        { model: 'claude-opus-4.6-fast', routing_mode: 'secondary' },
+        { model: 'claude-sonnet-4.6', routing_mode: 'secondary' },
+        { model: 'gemini-3.1-pro-preview', routing_mode: 'secondary' },
+        { model: 'gpt-5.3-codex', routing_mode: 'secondary' },
+        { model: 'gpt-5.2-codex', routing_mode: 'secondary' },
+        { model: 'gpt-5.1-codex-max', routing_mode: 'secondary' },
+        { model: 'claude-sonnet-4.5', routing_mode: 'secondary' },
+        { model: 'claude-opus-4.5', routing_mode: 'secondary' },
+        { model: 'grok-code-fast-1', routing_mode: 'secondary' },
+      ];
+
+      bootstrapAllModelsEl.addEventListener('click', async () => {
+        bootstrapAllModelsEl.disabled = true;
+        let connected = 0;
+        for (const { model, routing_mode } of ALL_COPILOT_MODELS) {
+          allModelsStatusEl.textContent = `connecting ${model}… (${connected}/${ALL_COPILOT_MODELS.length})`;
+          try {
+            const res = await fetch('/bootstrap/provider-lane-model', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ model, routing_mode }),
+            });
+            if (res.ok) connected++;
+          } catch (e) {
+            console.error(`failed to bootstrap ${model}`, e);
+          }
+        }
+        allModelsStatusEl.textContent = `⛛ ${connected}/${ALL_COPILOT_MODELS.length} neural links active`;
+        bootstrapAllModelsEl.disabled = false;
+        await Promise.all([refreshInventory(), refreshProviders(), refreshEvents()]);
+      });
+
       // === CHAT WEBSOCKET ===
       let chatWs = null;
 
@@ -2438,6 +2505,20 @@
               appendChatMessage('assistant', data.content, data.provider, data.model);
               chatInputEl.disabled = false;
               chatInputEl.focus();
+            } else if (data.type === 'auth_required') {
+              appendAuthCard(data.user_code, data.verification_uri, data.provider);
+              chatInputEl.disabled = false;
+            } else if (data.type === 'auth_success') {
+              // Auto-dismiss the auth modal
+              const authModal = document.getElementById('anomaly-auth-modal');
+              if (authModal) {
+                authModal.style.transition = 'opacity 0.4s';
+                authModal.style.opacity = '0';
+                setTimeout(() => authModal.remove(), 400);
+              }
+              appendChatMessage('system', data.message || '⛛ Authorization successful — send your message again');
+              chatInputEl.disabled = false;
+              chatInputEl.focus();
             } else if (data.type === 'error') {
               appendChatMessage('error', data.message);
               chatInputEl.disabled = false;
@@ -2450,10 +2531,18 @@
 
       function appendChatMessage(role, content, provider, model) {
         const el = document.createElement('div');
+        const borderColor = role === 'user' ? 'var(--panel-border)'
+          : role === 'error' ? 'rgba(255,17,0,0.3)'
+          : role === 'system' ? 'rgba(0,255,136,0.3)'
+          : 'rgba(74,0,224,0.3)';
+        const bgColor = role === 'user' ? 'rgba(255,255,255,0.03)'
+          : role === 'error' ? 'rgba(255,17,0,0.05)'
+          : role === 'system' ? 'rgba(0,255,136,0.05)'
+          : 'rgba(74,0,224,0.05)';
         el.style.cssText = `
           padding: 14px 16px;
-          border: 1px solid ${role === 'user' ? 'var(--panel-border)' : role === 'error' ? 'rgba(255,17,0,0.3)' : 'rgba(74,0,224,0.3)'};
-          background: ${role === 'user' ? 'rgba(255,255,255,0.03)' : role === 'error' ? 'rgba(255,17,0,0.05)' : 'rgba(74,0,224,0.05)'};
+          border: 1px solid ${borderColor};
+          background: ${bgColor};
           font-size: 13px;
           line-height: 1.6;
           white-space: pre-wrap;
@@ -2464,10 +2553,264 @@
           ? '<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-muted);">OPERATOR</span>'
           : role === 'error'
             ? '<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--anti-matter);">ERROR</span>'
-            : `<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--resonance);">ANOMALY</span><span style="font-size: 10px; color: var(--text-muted); margin-left: 8px;">${provider || ''} / ${model || ''}</span>`;
+            : role === 'system'
+              ? '<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--stable-matter, #0f8);">SYSTEM</span>'
+              : `<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--resonance);">ANOMALY</span><span style="font-size: 10px; color: var(--text-muted); margin-left: 8px;">${provider || ''} / ${model || ''}</span>`;
         el.innerHTML = `<div style="margin-bottom: 8px;">${badge}</div>${escapeHtml(content)}`;
         chatMessagesEl.appendChild(el);
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+      }
+
+      function appendAuthCard(userCode, verificationUri, provider) {
+        // Also add a small note in chat
+        appendChatMessage('system', `⛛ Authorization required for ${provider || 'copilot'} — modal opened with code ${userCode}`);
+
+        // Remove any existing auth modal
+        const existing = document.getElementById('anomaly-auth-modal');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'anomaly-auth-modal';
+        modal.innerHTML = `
+          <style>
+            #anomaly-auth-modal {
+              position: fixed;
+              inset: 0;
+              z-index: 99999;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              background: #030304;
+              animation: authModalIn 0.4s ease-out;
+            }
+            @keyframes authModalIn {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+
+            /* quantum grid */
+            .auth-quantum-grid {
+              position: absolute;
+              inset: 0;
+              background-image:
+                linear-gradient(rgba(74,0,224,0.06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(74,0,224,0.06) 1px, transparent 1px);
+              background-size: 50px 50px;
+              pointer-events: none;
+              mask-image: radial-gradient(ellipse 60% 60% at 50% 50%, black 30%, transparent 80%);
+              -webkit-mask-image: radial-gradient(ellipse 60% 60% at 50% 50%, black 30%, transparent 80%);
+            }
+
+            /* living void */
+            .auth-living-void {
+              position: absolute;
+              inset: 0;
+              background:
+                radial-gradient(ellipse 40% 40% at 50% 45%, rgba(74,0,224,0.12), transparent),
+                radial-gradient(ellipse 30% 30% at 50% 55%, rgba(138,43,226,0.06), transparent);
+              pointer-events: none;
+            }
+
+            .auth-card {
+              position: relative;
+              z-index: 1;
+              width: 520px;
+              max-width: 90vw;
+              text-align: center;
+              padding: 48px 40px;
+              border: 1px solid rgba(74,0,224,0.3);
+              background: rgba(74,0,224,0.04);
+              backdrop-filter: blur(20px);
+            }
+
+            .auth-card::before {
+              content: '';
+              position: absolute;
+              inset: -1px;
+              border: 1px solid transparent;
+              background: linear-gradient(135deg, rgba(74,0,224,0.4), rgba(255,17,0,0.15), rgba(74,0,224,0.4)) border-box;
+              mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+              mask-composite: exclude;
+              -webkit-mask-composite: xor;
+              pointer-events: none;
+              animation: authBorderShift 4s ease-in-out infinite;
+            }
+            @keyframes authBorderShift {
+              0%, 100% { opacity: 0.5; }
+              50% { opacity: 1; }
+            }
+
+            .auth-sigil {
+              font-family: 'Cinzel', serif;
+              font-size: 10px;
+              text-transform: uppercase;
+              letter-spacing: 0.35em;
+              color: rgba(255,255,255,0.35);
+              margin-bottom: 8px;
+            }
+
+            .auth-title {
+              font-family: 'Cinzel', serif;
+              font-size: 14px;
+              text-transform: uppercase;
+              letter-spacing: 0.2em;
+              color: #8a2be2;
+              margin-bottom: 32px;
+            }
+
+            .auth-code-container {
+              position: relative;
+              display: inline-block;
+              margin: 0 auto 32px;
+            }
+
+            /* orbital rings */
+            .auth-orbital {
+              position: absolute;
+              inset: -20px;
+              border: 1px solid rgba(74,0,224,0.15);
+              border-radius: 50%;
+              animation: authOrbit 12s linear infinite;
+            }
+            .auth-orbital::after {
+              content: '';
+              position: absolute;
+              inset: 8px;
+              border: 1px solid rgba(138,43,226,0.1);
+              border-radius: 50%;
+              animation: authOrbit 7s linear infinite reverse;
+            }
+            @keyframes authOrbit {
+              from { transform: rotate(0deg); }
+              to { transform: rotate(360deg); }
+            }
+
+            .auth-code {
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 48px;
+              font-weight: 700;
+              letter-spacing: 0.12em;
+              color: #ffffff;
+              padding: 24px 48px;
+              background: rgba(74,0,224,0.08);
+              border: 1px solid rgba(74,0,224,0.3);
+              user-select: all;
+              cursor: pointer;
+              position: relative;
+              z-index: 1;
+              transition: border-color 0.3s, background 0.3s;
+            }
+            .auth-code:hover {
+              border-color: rgba(138,43,226,0.6);
+              background: rgba(74,0,224,0.15);
+            }
+
+            .auth-instructions {
+              font-family: 'Cormorant Garamond', serif;
+              font-size: 18px;
+              color: rgba(255,255,255,0.6);
+              margin-bottom: 12px;
+              line-height: 1.5;
+            }
+
+            .auth-link {
+              display: inline-block;
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 14px;
+              color: #8a2be2;
+              text-decoration: none;
+              padding: 10px 24px;
+              border: 1px solid rgba(74,0,224,0.3);
+              background: rgba(74,0,224,0.06);
+              transition: all 0.3s;
+              margin-bottom: 32px;
+              letter-spacing: 0.05em;
+            }
+            .auth-link:hover {
+              color: #fff;
+              border-color: rgba(138,43,226,0.6);
+              background: rgba(74,0,224,0.15);
+              box-shadow: 0 0 30px rgba(74,0,224,0.2);
+            }
+
+            .auth-status {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 8px;
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 0.15em;
+              color: rgba(255,255,255,0.3);
+            }
+
+            .auth-pulse {
+              width: 8px;
+              height: 8px;
+              background: #4a00e0;
+              border-radius: 50%;
+              animation: authPulse 1.5s ease-in-out infinite;
+            }
+            @keyframes authPulse {
+              0%, 100% { opacity: 0.3; transform: scale(0.8); box-shadow: 0 0 0 0 rgba(74,0,224,0); }
+              50% { opacity: 1; transform: scale(1); box-shadow: 0 0 12px 4px rgba(74,0,224,0.3); }
+            }
+
+            .auth-close {
+              position: absolute;
+              top: 16px;
+              right: 16px;
+              z-index: 2;
+              width: 32px;
+              height: 32px;
+              background: none;
+              border: 1px solid rgba(255,255,255,0.1);
+              color: rgba(255,255,255,0.3);
+              font-size: 16px;
+              cursor: pointer;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              transition: all 0.3s;
+              font-family: 'JetBrains Mono', monospace;
+            }
+            .auth-close:hover {
+              border-color: rgba(255,17,0,0.4);
+              color: #ff1100;
+              background: rgba(255,17,0,0.05);
+            }
+          </style>
+
+          <div class="auth-living-void"></div>
+          <div class="auth-quantum-grid"></div>
+
+          <button class="auth-close" onclick="document.getElementById('anomaly-auth-modal').remove()" title="Close">✕</button>
+
+          <div class="auth-card">
+            <div class="auth-sigil">⛛ anomaly sovereign runtime</div>
+            <div class="auth-title">Authorization Required</div>
+
+            <div class="auth-code-container">
+              <div class="auth-orbital"></div>
+              <div class="auth-code" title="Click to select">${escapeHtml(userCode)}</div>
+            </div>
+
+            <div class="auth-instructions">
+              Enter this code to authorize ANOMALY
+            </div>
+
+            <a href="${escapeHtml(verificationUri)}" target="_blank" rel="noopener" class="auth-link">
+              ${escapeHtml(verificationUri)} →
+            </a>
+
+            <div class="auth-status">
+              <div class="auth-pulse"></div>
+              <span>awaiting authorization</span>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(modal);
       }
 
       function escapeHtml(text) {
@@ -2476,12 +2819,17 @@
         return div.innerHTML;
       }
 
+      const chatModelSelectEl = document.getElementById('chat-model-select');
+
       chatFormEl.addEventListener('submit', (event) => {
         event.preventDefault();
         const message = chatInputEl.value.trim();
         if (!message || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+        const selectedModel = chatModelSelectEl.value;
         appendChatMessage('user', message);
-        chatWs.send(JSON.stringify({ message }));
+        const payload = { message };
+        if (selectedModel) payload.model = selectedModel;
+        chatWs.send(JSON.stringify(payload));
         chatInputEl.value = '';
         chatInputEl.disabled = true;
         chatTypingEl.style.display = 'block';
