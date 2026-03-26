@@ -1,6 +1,6 @@
 # JIMI Control Plane UI
 
-This document defines the integrated control plane surface for JIMI SUPERSTAR.
+This document defines the integrated control plane surface for ANOMALY.
 
 The cockpit should not only observe the house. It should also configure, steer, inspect, and eventually govern it.
 

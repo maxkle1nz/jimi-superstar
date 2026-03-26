@@ -2,7 +2,7 @@
 
 This document defines the human-friendly chat communication surface for the active build method.
 
-Inside JIMI SUPERSTAR, RETROBUILDER is not only a build doctrine. It is also a visible chat ritual.
+Inside ANOMALY, RETROBUILDER is not only a build doctrine. It is also a visible chat ritual.
 
 The system should report progress in a way that is:
 
@@ -46,7 +46,7 @@ When the run changes architectural direction, the update should also include a v
 
 Recommended prefix:
 
-`⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟`
+`⌜rmnzr⌟ ⌜✦ ANOMALY⌟`
 
 This badge should remain stable across updates so the house feels continuous.
 
@@ -136,7 +136,7 @@ When ANSI is supported, prefer:
 Recommended palette:
 
 ```text
-\x1b[1;36m⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟\x1b[0m
+\x1b[1;36m⌜rmnzr⌟ ⌜✦ ANOMALY⌟\x1b[0m
 \x1b[1;32mRETROBUILDER  [████████░░] 80%\x1b[0m
 \x1b[1;34mL1GHT         [████████░░] 80%\x1b[0m
 \x1b[1;35mMEMORY        [███████░░░] 70%\x1b[0m
@@ -152,7 +152,7 @@ If ANSI is not supported, fall back to plain monospace text with the same order.
 Use while work is in progress.
 
 ```text
-⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟  ^_^
+⌜rmnzr⌟ ⌜✦ ANOMALY⌟  ^_^
 
 RETROBUILDER  [████████░░] 80%  R4 live loops materializing
 L1GHT         [████████░░] 80%  L4 live surfaces
@@ -171,7 +171,7 @@ NEXT
 Use after a completed slice.
 
 ```text
-⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟  :D
+⌜rmnzr⌟ ⌜✦ ANOMALY⌟  :D
 
 RETROBUILDER  [████████░░] 82%  R4 live loops materializing
 L1GHT         [████████░░] 82%  L4 live surfaces
@@ -191,7 +191,7 @@ NEXT
 Use when the user asks where the project stands.
 
 ```text
-⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟  :)
+⌜rmnzr⌟ ⌜✦ ANOMALY⌟  :)
 
 RETROBUILDER  [████████░░] 82%  vision proved, live materialization active
 L1GHT         [████████░░] 82%  runtime + live surfaces working together
@@ -211,7 +211,7 @@ FOCUS
 Use when the house changes plan during a live run.
 
 ```text
-⌜rmnzr⌟ ⌜✦ JIMI SUPERSTAR⌟  o_o
+⌜rmnzr⌟ ⌜✦ ANOMALY⌟  o_o
 
 RETROBUILDER  [████████░░] 84%  R4 live loops materializing
 L1GHT         [████████░░] 82%  L4 live surfaces
@@ -295,6 +295,6 @@ The other defines truth presentation.
 
 ## Relationship To JIMI
 
-This UIX is the default conversation mode for JIMI SUPERSTAR while RETROBUILDER is the active work method.
+This UIX is the default conversation mode for ANOMALY while RETROBUILDER is the active work method.
 
 Other work methods may introduce other communication rituals later, but this one is canonical for the current house.

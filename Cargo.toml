@@ -19,3 +19,5 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
+m1nd-core = { git = "https://github.com/maxkle1nz/m1nd.git", package = "m1nd-core" }
+m1nd-ingest = { git = "https://github.com/maxkle1nz/m1nd.git", package = "m1nd-ingest", default-features = false, features = ["tier1"] }

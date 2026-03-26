@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
+use m1nd_core::graph::Graph;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -1476,7 +1477,7 @@ pub struct HouseInventory {
     pub world_state_relations: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct HouseRuntime {
     pub events: EventStore,
     pub sessions: SessionManager,
@@ -1498,6 +1499,16 @@ pub struct HouseRuntime {
     pub world_state_nodes: WorldStateNodeRegistry,
     pub world_state_deltas: WorldStateDeltaRegistry,
     pub world_state_relations: WorldStateRelationRegistry,
+    pub graph: Graph,
+}
+
+impl std::fmt::Debug for HouseRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HouseRuntime")
+            .field("sessions", &self.sessions)
+            .field("graph", &"<m1nd::Graph>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl HouseRuntime {

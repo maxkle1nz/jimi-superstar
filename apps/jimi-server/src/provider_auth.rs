@@ -14,6 +14,7 @@ pub fn detect_provider_credentials() -> Vec<ProviderCredentialStatus> {
     vec![
         detect_codex_openai(),
         detect_anthropic(),
+        detect_copilot(),
         detect_google(),
         detect_moonshot(),
         detect_openrouter(),
@@ -175,3 +176,32 @@ fn detect_ollama() -> ProviderCredentialStatus {
         details: "no auth required; local daemon expected".into(),
     }
 }
+
+fn detect_copilot() -> ProviderCredentialStatus {
+    // Check GITHUB_TOKEN env var
+    if env::var("GITHUB_TOKEN").is_ok() {
+        return ProviderCredentialStatus {
+            provider: "copilot".into(),
+            ready: true,
+            source: "env".into(),
+            details: "GITHUB_TOKEN".into(),
+        };
+    }
+    // Check gh CLI config (login stores tokens here)
+    let gh_hosts = home_dir().join(".config").join("gh").join("hosts.yml");
+    if gh_hosts.exists() {
+        return ProviderCredentialStatus {
+            provider: "copilot".into(),
+            ready: true,
+            source: "cli-oauth".into(),
+            details: gh_hosts.display().to_string(),
+        };
+    }
+    ProviderCredentialStatus {
+        provider: "copilot".into(),
+        ready: false,
+        source: "missing".into(),
+        details: "expected GITHUB_TOKEN or gh CLI login (supports OAuth device flow)".into(),
+    }
+}
+

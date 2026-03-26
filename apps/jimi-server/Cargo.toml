@@ -2,7 +2,7 @@
 name = "jimi-server"
 version = "0.1.0"
 edition = "2024"
-description = "Minimal HTTP surface for JIMI SUPERSTAR"
+description = "Minimal HTTP surface for ANOMALY"
 license = "MIT"
 
 [dependencies]
@@ -14,3 +14,4 @@ uuid.workspace = true
 chrono.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 jimi-kernel = { path = "../../crates/jimi-kernel" }
+m1nd-ingest.workspace = true

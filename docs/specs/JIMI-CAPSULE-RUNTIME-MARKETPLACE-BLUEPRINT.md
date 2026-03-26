@@ -2,7 +2,7 @@
 
 Frozen next-phase blueprint for the first platform expansion after the operational core.
 
-This phase turns JIMI SUPERSTAR from a sovereign operator house into a sovereign capsule platform.
+This phase turns ANOMALY from a sovereign operator house into a sovereign capsule platform.
 
 ## Phase Thesis
 

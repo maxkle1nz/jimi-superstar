@@ -1,6 +1,6 @@
 # Frozen Specs
 
-The constitutional spec stack for JIMI SUPERSTAR is currently:
+The constitutional spec stack for ANOMALY is currently:
 
 - House blueprint
 - Capability ABI

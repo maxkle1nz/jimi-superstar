@@ -1,6 +1,6 @@
 # Mandala Capsule Model
 
-JIMI SUPERSTAR should treat the installable agent as a `Mandala Capsule`.
+ANOMALY should treat the installable agent as a `Mandala Capsule`.
 
 ## Capsule Contents
 

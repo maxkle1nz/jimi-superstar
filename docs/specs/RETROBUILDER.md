@@ -1,6 +1,6 @@
 # RETROBUILDER
 
-RETROBUILDER is one canonical work method of JIMI SUPERSTAR.
+RETROBUILDER is one canonical work method of ANOMALY.
 
 It is also a general build doctrine that can be used beyond JIMI, but inside this house it should be treated as an explicit operational method rather than just background philosophy.
 
@@ -69,7 +69,7 @@ the house can reinterpret new information without pretending the old plan was pe
 
 ## Role Inside JIMI
 
-JIMI SUPERSTAR may eventually support multiple work methods, build modes, or orchestration disciplines.
+ANOMALY may eventually support multiple work methods, build modes, or orchestration disciplines.
 
 RETROBUILDER is the current flagship method active in this system.
 
@@ -77,7 +77,7 @@ Its default visible communication ritual is defined in `RETROBUILDER-CHAT-UIX.md
 
 ## Validation
 
-JIMI SUPERSTAR is the validation project for RETROBUILDER itself.
+ANOMALY is the validation project for RETROBUILDER itself.
 
 One validated characteristic of the method is now explicit:
 

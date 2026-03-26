@@ -2,7 +2,7 @@
 name = "jimi-kernel"
 version = "0.1.0"
 edition = "2024"
-description = "Core runtime types for JIMI SUPERSTAR"
+description = "Core runtime types for ANOMALY"
 license = "MIT"
 
 [dependencies]
@@ -12,3 +12,4 @@ thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
+m1nd-core.workspace = true

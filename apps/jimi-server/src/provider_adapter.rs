@@ -1,4 +1,4 @@
-use std::{path::PathBuf, process::Command};
+use std::{path::PathBuf, process::Command, sync::OnceLock, time::Duration};
 
 use jimi_kernel::ProviderLaneRecord;
 use serde::Deserialize;
@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub enum ProviderAdapterKind {
     CodexCli,
     AnthropicApi,
+    CopilotApi,
     Unsupported(String),
 }
 
@@ -74,6 +75,9 @@ struct CodexCliAdapter;
 #[derive(Debug, Default)]
 struct AnthropicApiAdapter;
 
+#[derive(Debug, Default)]
+struct CopilotApiAdapter;
+
 #[derive(Debug, Clone)]
 struct UnsupportedAdapter {
     provider: String,
@@ -89,6 +93,68 @@ struct AnthropicContentBlock {
     #[serde(rename = "type")]
     block_type: String,
     text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotDeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    interval: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotTokenResponse {
+    access_token: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotChatResponse {
+    choices: Vec<CopilotChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotChatChoice {
+    message: CopilotChatMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotChatMessage {
+    content: Option<String>,
+}
+
+static COPILOT_TOKEN: OnceLock<String> = OnceLock::new();
+const COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn copilot_token_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".config")
+        .join("anomaly")
+        .join("copilot_token.json")
+}
+
+fn save_copilot_token(token: &str) {
+    let path = copilot_token_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::File::create(&path) {
+        let _ = std::io::Write::write_all(
+            &mut file,
+            serde_json::json!({ "token": token }).to_string().as_bytes(),
+        );
+        eprintln!("  ⛛ copilot token persisted to {}", path.display());
+    }
+}
+
+fn load_copilot_token() -> Option<String> {
+    let path = copilot_token_path();
+    let data = std::fs::read_to_string(&path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
+    parsed.get("token")?.as_str().map(|s| s.to_string())
 }
 
 impl ProviderAdapter for CodexCliAdapter {
@@ -139,10 +205,26 @@ impl ProviderAdapter for AnthropicApiAdapter {
     }
 }
 
+impl ProviderAdapter for CopilotApiAdapter {
+    fn label(&self) -> &'static str {
+        "copilot_api"
+    }
+
+    fn execute(
+        &self,
+        provider_lane: &ProviderLaneRecord,
+        _house_root: &PathBuf,
+        provider_prompt: &str,
+    ) -> Result<String, ProviderExecutionError> {
+        run_copilot_chat(provider_lane, provider_prompt)
+    }
+}
+
 pub fn resolve_provider_adapter(provider_lane: &ProviderLaneRecord) -> ProviderAdapterKind {
     match provider_lane.provider.as_str() {
         "codex" => ProviderAdapterKind::CodexCli,
         "anthropic" => ProviderAdapterKind::AnthropicApi,
+        "copilot" => ProviderAdapterKind::CopilotApi,
         other => ProviderAdapterKind::Unsupported(other.to_string()),
     }
 }
@@ -160,6 +242,9 @@ pub fn run_provider_adapter(
         ProviderAdapterKind::AnthropicApi => {
             AnthropicApiAdapter.execute(provider_lane, house_root, provider_prompt)
         }
+        ProviderAdapterKind::CopilotApi => {
+            CopilotApiAdapter.execute(provider_lane, house_root, provider_prompt)
+        }
         ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
             provider: provider.clone(),
         }
@@ -171,6 +256,7 @@ pub fn provider_adapter_label(adapter: &ProviderAdapterKind) -> &'static str {
     match adapter {
         ProviderAdapterKind::CodexCli => CodexCliAdapter.label(),
         ProviderAdapterKind::AnthropicApi => AnthropicApiAdapter.label(),
+        ProviderAdapterKind::CopilotApi => CopilotApiAdapter.label(),
         ProviderAdapterKind::Unsupported(provider) => UnsupportedAdapter {
             provider: provider.clone(),
         }
@@ -271,6 +357,7 @@ fn run_anthropic_messages(
         })?;
 
     let client = reqwest::blocking::Client::builder()
+        .timeout(PROVIDER_TIMEOUT)
         .build()
         .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
 
@@ -328,3 +415,219 @@ fn run_anthropic_messages(
         Ok(text)
     }
 }
+
+/// Obtain a GitHub Copilot OAuth token using the device code flow.
+/// The token is cached in a process-global OnceLock so the flow only runs once.
+/// If GITHUB_TOKEN is set, it is used directly to exchange for a Copilot token.
+pub fn obtain_copilot_token() -> Result<String, ProviderExecutionError> {
+    if let Some(token) = COPILOT_TOKEN.get() {
+        return Ok(token.clone());
+    }
+
+    // Try loading persisted token from disk
+    if let Some(saved_token) = load_copilot_token() {
+        let _ = COPILOT_TOKEN.set(saved_token.clone());
+        eprintln!("  ⛛ copilot token loaded from disk");
+        return Ok(saved_token);
+    }
+
+    // If the user already has a GitHub token (e.g. from gh CLI), try to use it directly
+    if let Ok(gh_token) = std::env::var("GITHUB_TOKEN") {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(PROVIDER_TIMEOUT)
+            .build()
+            .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+        let response = client
+            .get("https://api.github.com/copilot_internal/v2/token")
+            .header("Authorization", format!("token {}", gh_token))
+            .header("User-Agent", "anomaly-kernel/1.0")
+            .header("Accept", "application/json")
+            .send()
+            .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+        if response.status().is_success() {
+            #[derive(Deserialize)]
+            struct CopilotInternalToken {
+                token: String,
+            }
+            if let Ok(parsed) = response.json::<CopilotInternalToken>() {
+                let _ = COPILOT_TOKEN.set(parsed.token.clone());
+                save_copilot_token(&parsed.token);
+                return Ok(parsed.token);
+            }
+        }
+    }
+
+    // Device code OAuth flow
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120)) // Device flow needs longer timeout for polling
+        .build()
+        .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+    let device_response = client
+        .post("https://github.com/login/device/code")
+        .header("Accept", "application/json")
+        .form(&[
+            ("client_id", COPILOT_CLIENT_ID),
+            ("scope", "read:user"),
+        ])
+        .send()
+        .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+    let device: CopilotDeviceCodeResponse = device_response
+        .json()
+        .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+    eprintln!("\n╔══════════════════════════════════════════════════╗");
+    eprintln!("║  ⛛ ANOMALY — GitHub Copilot Authorization      ║");
+    eprintln!("║                                                  ║");
+    eprintln!("║  Go to: {}  ║", device.verification_uri);
+    eprintln!("║  Enter code: {:>8}                           ║", device.user_code);
+    eprintln!("╚══════════════════════════════════════════════════╝\n");
+
+    let interval = std::time::Duration::from_secs(device.interval.unwrap_or(5));
+    let max_attempts = 60;
+
+    for _ in 0..max_attempts {
+        std::thread::sleep(interval);
+
+        let token_response = client
+            .post("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .form(&[
+                ("client_id", COPILOT_CLIENT_ID),
+                ("device_code", device.device_code.as_str()),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+        let token_result: CopilotTokenResponse = token_response
+            .json()
+            .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+        if let Some(access_token) = token_result.access_token {
+            // Exchange GitHub OAuth token for Copilot internal token
+            let copilot_response = client
+                .get("https://api.github.com/copilot_internal/v2/token")
+                .header("Authorization", format!("token {}", access_token))
+                .header("User-Agent", "anomaly-kernel/1.0")
+                .header("Accept", "application/json")
+                .send()
+                .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+            if copilot_response.status().is_success() {
+                #[derive(Deserialize)]
+                struct CopilotInternalToken {
+                    token: String,
+                }
+                if let Ok(parsed) = copilot_response.json::<CopilotInternalToken>() {
+                    let _ = COPILOT_TOKEN.set(parsed.token.clone());
+                    save_copilot_token(&parsed.token);
+                    eprintln!("  ✔ Copilot token obtained and persisted");
+                    return Ok(parsed.token);
+                }
+            }
+
+            // Fallback: use the OAuth token directly
+            let _ = COPILOT_TOKEN.set(access_token.clone());
+            save_copilot_token(&access_token);
+            eprintln!("  ✔ GitHub token persisted (direct mode)");
+            return Ok(access_token);
+        }
+
+        if let Some(error) = &token_result.error {
+            if error == "authorization_pending" || error == "slow_down" {
+                continue;
+            }
+            return Err(ProviderExecutionError::MissingCredentials(format!(
+                "copilot oauth failed: {}",
+                error
+            )));
+        }
+    }
+
+    Err(ProviderExecutionError::MissingCredentials(
+        "copilot oauth device flow timed out".to_string(),
+    ))
+}
+
+fn run_copilot_chat(
+    provider_lane: &ProviderLaneRecord,
+    provider_prompt: &str,
+) -> Result<String, ProviderExecutionError> {
+    let token = obtain_copilot_token()?;
+    let model = if provider_lane.model.is_empty() {
+        "gpt-4o"
+    } else {
+        &provider_lane.model
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(PROVIDER_TIMEOUT)
+        .build()
+        .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+    let response = client
+        .post("https://api.githubcopilot.com/chat/completions")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .header("Copilot-Integration-Id", "vscode-chat")
+        .header("Editor-Version", "anomaly/1.0")
+        .json(&serde_json::json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are ANOMALY, a sovereign agent house runtime. Respond concisely and precisely."
+                },
+                {
+                    "role": "user",
+                    "content": provider_prompt,
+                }
+            ],
+            "max_tokens": 2048,
+            "stream": false
+        }))
+        .send()
+        .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_else(|_| "<no body>".into());
+        return Err(if status.as_u16() == 429 {
+            ProviderExecutionError::RateLimited(format!(
+                "copilot api rate limited ({}): {}",
+                status, body
+            ))
+        } else {
+            ProviderExecutionError::UpstreamRejected(format!(
+                "copilot api failed ({}): {}",
+                status, body
+            ))
+        });
+    }
+
+    let parsed: CopilotChatResponse = response
+        .json()
+        .map_err(|error| ProviderExecutionError::TransportFailure(error.to_string()))?;
+
+    let text = parsed
+        .choices
+        .into_iter()
+        .filter_map(|choice| choice.message.content)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    if text.is_empty() {
+        Err(ProviderExecutionError::EmptyResponse(
+            "copilot returned no content".into(),
+        ))
+    } else {
+        Ok(text)
+    }
+}
+

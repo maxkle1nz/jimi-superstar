@@ -1,6 +1,6 @@
 # Mandala + FieldVault Steering
 
-JIMI SUPERSTAR is steering toward a mandala-native and fieldvault-sealed architecture.
+ANOMALY is steering toward a mandala-native and fieldvault-sealed architecture.
 
 ## Core Rule
 

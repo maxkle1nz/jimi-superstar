@@ -1,6 +1,6 @@
 # CRUSH to JIMI Memory Donor Map
 
-This document records which memory ideas and mechanisms from `crush` should be imported into `JIMI SUPERSTAR`, which ones should be adapted, and which ones should remain outside the house.
+This document records which memory ideas and mechanisms from `crush` should be imported into `ANOMALY`, which ones should be adapted, and which ones should remain outside the house.
 
 It exists to prevent vague influence and replace it with explicit donor mapping.
 

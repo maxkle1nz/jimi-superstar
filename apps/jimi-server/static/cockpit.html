@@ -1,0 +1,2562 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>⌜ ⛛ ANOMALY ⌟</title>
+    <!-- CORE ANOMALY FONTS -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@100..800&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        /* Core Brand Tokens */
+        --void: #030304;          /* The deep background */
+        --matter: #ffffff;        /* Primary text */
+        --anti-matter: #ff1100;   /* Alerts, critical actions, high energy */
+        --resonance: #4a00e0;     /* Depth, mystery, secondary accents */
+        --stable-matter: #00ffcc; /* Success, stable states, verified data */
+        
+        /* Functional Tokens */
+        --panel-bg: rgba(255, 255, 255, 0.02);
+        --panel-border: rgba(255, 255, 255, 0.08);
+        --text-muted: rgba(255, 255, 255, 0.5);
+        --pulse-glow: 0 0 20px rgba(74, 0, 224, 0.4);
+      }
+
+      * { box-sizing: border-box; }
+      
+      body {
+        margin: 0;
+        background-color: var(--void);
+        color: var(--matter);
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 300;
+        font-size: 14px;
+        line-height: 1.6;
+        overflow-x: hidden;
+        
+        /* The Living Void Background Effect */
+        background-image: 
+          radial-gradient(circle at 15% 50%, rgba(74, 0, 224, 0.08), transparent 25%),
+          radial-gradient(circle at 85% 30%, rgba(255, 17, 0, 0.05), transparent 20%);
+      }
+
+      /* Animated Grain Overlay */
+      body::before {
+        content: "";
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+        opacity: 0.03;
+        z-index: 100;
+      }
+
+      h1, h2, h3 {
+        font-family: 'Cinzel', serif;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin: 0;
+      }
+
+      /* TYPOGRAPHY CLASSES */
+      .font-data { font-family: 'JetBrains Mono', monospace; }
+      .font-concept { font-family: 'Cinzel', serif; }
+      .font-organic { font-family: 'Cormorant Garamond', serif; }
+
+      .shell {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 40px 24px;
+        position: relative;
+        z-index: 1;
+      }
+
+      .hero {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        margin-bottom: 60px;
+        border-bottom: 1px solid var(--panel-border);
+        padding-bottom: 30px;
+        position: relative;
+      }
+
+      .hero::after {
+        content: '';
+        position: absolute;
+        bottom: -1px;
+        left: 0;
+        width: 150px;
+        height: 1px;
+        background: var(--resonance);
+        box-shadow: var(--pulse-glow);
+      }
+
+      h1 {
+        font-size: clamp(40px, 8vw, 80px);
+        line-height: 0.9;
+        text-shadow: 0 0 40px rgba(255, 255, 255, 0.1);
+      }
+
+      .tag {
+        display: inline-block;
+        font-family: 'JetBrains Mono', monospace;
+        color: var(--matter);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        margin-bottom: 16px;
+        opacity: 0.7;
+      }
+
+      .tag::before {
+        content: '■ ';
+        color: var(--resonance);
+      }
+
+      .sub {
+        font-family: 'Cormorant Garamond', serif;
+        font-style: italic;
+        font-size: 22px;
+        color: var(--text-muted);
+        margin-top: 16px;
+        max-width: 600px;
+      }
+
+      /* GRID LAYOUT */
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 380px;
+        gap: 30px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 30px;
+      }
+
+      @media (max-width: 1024px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+
+      /* PANELS */
+      .panel {
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        padding: 24px;
+        position: relative;
+        backdrop-filter: blur(10px);
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .panel:hover {
+        border-color: rgba(255, 255, 255, 0.15);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      }
+
+      /* Corner accents on panels */
+      .panel::before, .panel::after {
+        content: ''; position: absolute; width: 8px; height: 8px; border: 1px solid transparent;
+      }
+      .panel::before { top: -1px; left: -1px; border-top-color: var(--matter); border-left-color: var(--matter); opacity: 0.3;}
+      .panel::after { bottom: -1px; right: -1px; border-bottom-color: var(--matter); border-right-color: var(--matter); opacity: 0.3;}
+
+      .panel h2 {
+        font-size: 14px;
+        color: var(--matter);
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      
+      .panel h2::before {
+        content: '';
+        display: inline-block;
+        width: 4px;
+        height: 14px;
+        background: var(--anti-matter);
+      }
+
+      /* INVENTORY STATS */
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 16px;
+      }
+
+      .stat {
+        padding: 16px;
+        background: rgba(0,0,0,0.3);
+        border: 1px solid rgba(255,255,255,0.05);
+        position: relative;
+        overflow: hidden;
+      }
+
+      .stat::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; width: 2px; height: 100%;
+        background: var(--resonance);
+        opacity: 0.5;
+        transition: opacity 0.3s, background 0.3s;
+      }
+      
+      .stat:hover::before {
+        opacity: 1;
+        background: var(--anti-matter);
+      }
+
+      .stat .value {
+        font-family: 'Cinzel', serif;
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--matter);
+        line-height: 1;
+      }
+
+      .stat .label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-muted);
+        margin-top: 8px;
+      }
+
+      /* FORMS & BUTTONS */
+      .session-form {
+        display: flex;
+        gap: 12px;
+        margin: 20px 0 12px;
+      }
+
+      .action-row {
+        display: flex;
+        gap: 12px;
+        margin: 16px 0 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      input, button, select {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 13px;
+        background: rgba(0,0,0,0.4);
+        border: 1px solid var(--panel-border);
+        color: var(--matter);
+        padding: 12px 16px;
+        transition: all 0.2s ease;
+      }
+
+      input:focus, select:focus {
+        outline: none;
+        border-color: var(--resonance);
+        box-shadow: inset 0 0 10px rgba(74, 0, 224, 0.1);
+      }
+      
+      input { flex: 1; }
+
+      button {
+        background: transparent;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-size: 11px;
+        font-weight: 600;
+        position: relative;
+        overflow: hidden;
+      }
+
+      button::before {
+        content: '';
+        position: absolute;
+        bottom: 0; left: 0; width: 100%; height: 2px;
+        background: var(--matter);
+        transform: scaleX(0);
+        transform-origin: right;
+        transition: transform 0.3s ease;
+      }
+
+      button:hover {
+        background: rgba(255,255,255,0.05);
+        border-color: var(--matter);
+      }
+
+      button:hover::before {
+        transform: scaleX(1);
+        transform-origin: left;
+      }
+      
+      /* Primary action buttons */
+      button[type="submit"], #execute-dispatch, #bootstrap-core {
+        border-color: var(--resonance);
+        color: var(--matter);
+      }
+      
+      button[type="submit"]:hover, #execute-dispatch:hover, #bootstrap-core:hover {
+        background: rgba(74, 0, 224, 0.1);
+        border-color: var(--resonance);
+        box-shadow: 0 0 15px rgba(74, 0, 224, 0.3);
+      }
+      button[type="submit"]::before, #execute-dispatch::before, #bootstrap-core::before { background: var(--resonance); }
+
+      /* Critical action buttons */
+      button[onclick*="uninstall"], button[onclick*="deny"] {
+        border-color: var(--panel-border);
+      }
+      button[onclick*="uninstall"]:hover, button[onclick*="deny"]:hover {
+        color: var(--anti-matter);
+        border-color: var(--anti-matter);
+        background: rgba(255, 17, 0, 0.05);
+      }
+      button[onclick*="uninstall"]::before, button[onclick*="deny"]::before { background: var(--anti-matter); }
+
+      /* LISTS & CARDS */
+      .list {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--panel-border);
+        padding: 16px;
+        background: rgba(0,0,0,0.2);
+        position: relative;
+        transition: border-color 0.2s;
+      }
+      
+      .card:hover {
+        border-color: rgba(255,255,255,0.2);
+      }
+
+      .card strong {
+        display: block;
+        font-family: 'Cinzel', serif;
+        color: var(--matter);
+        font-size: 16px;
+        margin-bottom: 8px;
+        letter-spacing: 0.05em;
+      }
+
+      .meta {
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.5;
+        word-break: break-word;
+        display: flex;
+        align-items: baseline;
+      }
+      
+      .meta::before {
+        content: '›';
+        color: var(--resonance);
+        margin-right: 6px;
+        font-size: 14px;
+      }
+
+      /* EVENT PULSE FEED */
+      .feed {
+        max-height: 600px;
+        overflow-y: auto;
+        padding-right: 10px;
+      }
+      
+      .feed::-webkit-scrollbar { width: 4px; }
+      .feed::-webkit-scrollbar-track { background: var(--void); }
+      .feed::-webkit-scrollbar-thumb { background: var(--resonance); }
+
+      .event {
+        padding: 12px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.03);
+        position: relative;
+        padding-left: 16px;
+      }
+
+      .event::before {
+        content: '';
+        position: absolute;
+        left: 0; top: 16px;
+        width: 6px; height: 6px;
+        background: var(--stable-matter);
+        border-radius: 50%;
+        box-shadow: 0 0 8px var(--stable-matter);
+      }
+      
+      /* Event Types Coloring */
+      .event:nth-child(even)::before { background: var(--resonance); box-shadow: 0 0 8px var(--resonance); }
+      .event:nth-child(3n)::before { background: var(--anti-matter); box-shadow: 0 0 8px var(--anti-matter); }
+
+      .event:first-child { border-top: 0; }
+
+      .event-type {
+        font-family: 'Cinzel', serif;
+        color: var(--matter);
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+
+      /* UTILITIES */
+      .empty {
+        color: var(--text-muted);
+        padding: 16px;
+        font-style: italic;
+        font-family: 'Cormorant Garamond', serif;
+        font-size: 16px;
+        text-align: center;
+        border: 1px dashed var(--panel-border);
+      }
+
+      .small {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .status-ok { color: var(--stable-matter); text-shadow: 0 0 10px rgba(0,255,204,0.3); }
+      .status-error { color: var(--anti-matter); text-shadow: 0 0 10px rgba(255,17,0,0.3); }
+      
+      /* UIX Progress Bar */
+      .progress-container {
+        font-family: 'JetBrains Mono', monospace;
+        color: var(--matter);
+        opacity: 0.8;
+      }
+      .progress-container span.filled { color: var(--resonance); }
+      .progress-container span.empty { color: rgba(255,255,255,0.1); }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.4; transform: scale(1.2); }
+      }
+
+      #chat-messages::-webkit-scrollbar { width: 4px; }
+      #chat-messages::-webkit-scrollbar-track { background: var(--void); }
+      #chat-messages::-webkit-scrollbar-thumb { background: var(--resonance); }
+    </style>
+  </head>
+  <body>
+    <!-- The HTML structure remains identical so JS hooks won't break. Only class/structure styling changes -->
+    <div class="shell">
+      <div class="hero">
+        <div>
+          <div class="tag">AGI KERNEL / R5</div>
+          <h1>⌜ ⛛ ANOMALY ⌟</h1>
+          <div class="sub">
+            The sovereign operating environment. Inventory, sessions, and realtime event pulse sharing a single truth state.
+          </div>
+        </div>
+        <div class="small" id="ws-status">initializing quantum link…</div>
+      </div>
+
+      <div class="panel" style="margin-bottom: 30px;">
+        <h2>System Telemetry</h2>
+        <div class="stats" id="stats"></div>
+      </div>
+
+      <div class="grid">
+        <div class="stack">
+          
+          <!-- SESSIONS & TURNS -->
+          <div class="panel">
+            <h2>Session Matrix</h2>
+            <form class="session-form" id="session-form">
+              <input id="session-title" placeholder="Initialize new spatial room" value="Boot next anomaly sequence" />
+              <button type="submit">Establish</button>
+            </form>
+            <div class="list" id="session-list"></div>
+            
+            <form class="session-form" id="turn-form">
+              <input id="turn-intent" placeholder="Specify execution vector" value="Ground implementation slice" />
+              <button type="submit">Dispatch Sequence</button>
+            </form>
+            <div class="small" id="turn-status">awaiting state transition</div>
+            
+            <div class="action-row">
+              <button id="execute-dispatch">Process Queue [Standard]</button>
+              <div class="small" id="execute-status">idle</div>
+            </div>
+            <div class="action-row">
+              <button id="execute-dispatch-live">Process Queue [Live Stream]</button>
+              <div class="small" id="execute-live-status">idle</div>
+            </div>
+            <div class="list" id="turn-list"></div>
+            <div class="list" id="dispatch-list"></div>
+          </div>
+
+          <!-- CAPSULE CORE -->
+          <div class="panel">
+            <h2>Core Runtime</h2>
+            <div class="small">Bootstrap root personality into the void.</div>
+            <div class="action-row">
+              <button id="bootstrap-core">Inject Core Artifact</button>
+              <div class="small" id="bootstrap-status">waiting</div>
+            </div>
+            <div class="action-row">
+              <button id="seal-core">Seal Cryptographic State</button>
+              <div class="small" id="seal-status">waiting</div>
+            </div>
+            <div class="action-row">
+              <button id="bootstrap-provider">Establish Neural Link [Primary]</button>
+              <div class="small" id="provider-status">offline</div>
+            </div>
+            <div class="action-row">
+              <button id="bootstrap-provider-anthropic">Establish Neural Link [Secondary]</button>
+              <div class="small" id="provider-secondary-status">offline</div>
+            </div>
+            <div class="action-row">
+              <button id="bootstrap-provider-copilot">Establish Neural Link [Copilot]</button>
+              <div class="small" id="provider-copilot-status">offline</div>
+            </div>
+            <div class="list" id="mandala-list"></div>
+            <div class="list" id="capsule-list"></div>
+            <div class="list" id="capsule-preview-view"></div>
+            <div class="list" id="slot-list"></div>
+            <div class="list" id="artifact-list"></div>
+            <div class="list" id="provider-list"></div>
+          </div>
+
+          <!-- MACRO -->
+          <div class="panel">
+            <h2>Strategic Vector</h2>
+            <div class="small">Panoramic project convergence data.</div>
+            <div class="list" id="macro-status-view"></div>
+            <div class="list" id="macro-menu-view"></div>
+          </div>
+
+          <!-- CONTROL PLANE -->
+          <div class="panel">
+            <h2>Control Plane</h2>
+            <div class="small">Runtime memory thresholds and world integration.</div>
+            <form class="session-form" id="memory-policy-form" style="flex-wrap:wrap;">
+              <input id="hot-limit" type="number" min="1" step="1" title="hot context" value="5" style="min-width:60px;flex:none;" />
+              <input id="relevant-limit" type="number" min="1" step="1" title="relevant context" value="6" style="min-width:60px;flex:none;"/>
+              <input id="promotion-threshold" type="number" min="0" max="1" step="0.01" title="threshold" value="0.88" style="min-width:80px;flex:none;"/>
+              <select id="world-state-scope" style="flex:1;">
+                <option value="workspace+process">world: unified</option>
+                <option value="workspace">world: static</option>
+                <option value="process">world: kinetic</option>
+              </select>
+              <input id="world-entry-limit" type="number" min="1" step="1" title="world entries" value="8" style="min-width:60px;flex:none;"/>
+              <input id="world-process-limit" type="number" min="0" step="1" title="world processes" value="8" style="min-width:60px;flex:none;"/>
+              <button type="submit" style="width:100%;">Commit Policy Shift</button>
+            </form>
+            <div class="action-row">
+              <label class="small"><input id="stable-promotion-toggle" type="checkbox" checked /> neural stable-prom</label>
+              <label class="small" style="margin-left:10px;"><input id="fieldvault-sealing-toggle" type="checkbox" checked /> fld sealing</label>
+              <label class="small" style="margin-left:10px;"><input id="world-state-toggle" type="checkbox" checked /> ingest world</label>
+              <div class="small" id="memory-policy-status" style="width:100%;margin-top:6px;">awaiting parameters</div>
+            </div>
+            <div class="list" id="control-plane-view"></div>
+          </div>
+
+          <!-- OTHER SURFACES -->
+          <div class="panel"><h2>Provider Network</h2><div class="list" id="provider-readiness-view"></div></div>
+          <div class="panel"><h2>Synthesis Engine</h2><div class="list" id="distiller-status-view"></div></div>
+          <div class="panel"><h2>Security Perimeter</h2><div class="list" id="security-status-view"></div></div>
+          <div class="panel"><h2>Trust Topology</h2><div class="list" id="capsule-trust-view"></div></div>
+          
+          <div class="panel">
+            <h2>Artifact Exchange</h2>
+            <div class="action-row"><button onclick="importDemoCapsule()">Pull Demo Genesis Fragment</button></div>
+            <div class="list" id="marketplace-view"></div>
+          </div>
+          
+          <div class="panel"><h2>Human Consensus</h2><div class="list" id="approvals-view"></div></div>
+          <div class="panel"><h2>World Observation</h2><div class="list" id="world-state-view"></div></div>
+          
+          <div class="panel">
+            <h2>Autonomous Subroutine</h2>
+            <div class="action-row">
+              <button id="toggle-autonomy">Toggle Subroutine</button>
+              <div class="small" id="autonomy-status-line">awaiting</div>
+            </div>
+            <div class="list" id="autonomy-status-view"></div>
+          </div>
+
+          <!-- MEMORY -->
+          <div class="panel">
+            <h2>Cognitive Archive</h2>
+            <div class="small" id="context-status">awaiting</div>
+            <form class="session-form" id="memory-search-form">
+              <select id="memory-search-scope" style="flex:none;width:120px;">
+                <option value="session">local frame</option>
+                <option value="room">room space</option>
+                <option value="house" selected>void collective</option>
+              </select>
+              <input id="memory-search-query" placeholder="query semantic embedding..." />
+              <button type="submit">Probe</button>
+            </form>
+            <div class="small" id="memory-search-status">idle</div>
+            <div class="list" id="memory-capsule-list"></div>
+            <div class="list" id="memory-search-results"></div>
+            <div class="list" id="memory-relevance-list"></div>
+            <div class="list" id="room-memory-relevance-list"></div>
+            <div class="list" id="global-memory-relevance-list"></div>
+            <div class="list" id="summary-list"></div>
+            <div class="list" id="bridge-list"></div>
+            <div class="list" id="trigger-list"></div>
+            <div class="list" id="promotion-list"></div>
+            <div class="list" id="context-packet-view"></div>
+          </div>
+        </div>
+
+        <!-- CHAT SURFACE -->
+        <div class="panel" style="align-self: start; position: sticky; top: 24px; display: flex; flex-direction: column; max-height: 80vh;">
+          <h2>Neural Interface</h2>
+          <div id="chat-messages" style="
+            flex: 1;
+            overflow-y: auto;
+            min-height: 300px;
+            max-height: 55vh;
+            padding-right: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+          "></div>
+          <div id="chat-typing" style="display: none; padding: 8px 0; color: var(--text-muted); font-style: italic; font-family: 'Cormorant Garamond', serif; font-size: 15px;">
+            <span style="display: inline-block; animation: pulse 1.5s ease-in-out infinite;">⛛</span> ANOMALY is thinking…
+          </div>
+          <div id="chat-status" class="small" style="margin: 8px 0;">connecting…</div>
+          <form id="chat-form" style="display: flex; gap: 8px; margin-top: 8px;">
+            <input id="chat-input" placeholder="Speak to the void…" style="flex: 1; font-family: 'JetBrains Mono', monospace;" autocomplete="off" />
+            <button type="submit" style="padding: 12px 20px;">⛛</button>
+          </form>
+
+          <div style="margin-top: 20px; border-top: 1px solid var(--panel-border); padding-top: 16px;">
+            <h2>Event Pulse</h2>
+            <div class="feed" id="event-feed" style="max-height: 250px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const statsEl = document.getElementById('stats');
+      const sessionListEl = document.getElementById('session-list');
+      const eventFeedEl = document.getElementById('event-feed');
+      const wsStatusEl = document.getElementById('ws-status');
+      const sessionFormEl = document.getElementById('session-form');
+      const sessionTitleEl = document.getElementById('session-title');
+      const turnFormEl = document.getElementById('turn-form');
+      const turnIntentEl = document.getElementById('turn-intent');
+      const turnStatusEl = document.getElementById('turn-status');
+      const executeDispatchEl = document.getElementById('execute-dispatch');
+      const executeStatusEl = document.getElementById('execute-status');
+      const executeDispatchLiveEl = document.getElementById('execute-dispatch-live');
+      const executeLiveStatusEl = document.getElementById('execute-live-status');
+      const turnListEl = document.getElementById('turn-list');
+      const dispatchListEl = document.getElementById('dispatch-list');
+      const mandalaListEl = document.getElementById('mandala-list');
+      const capsuleListEl = document.getElementById('capsule-list');
+      const capsulePreviewViewEl = document.getElementById('capsule-preview-view');
+      const slotListEl = document.getElementById('slot-list');
+      const artifactListEl = document.getElementById('artifact-list');
+      const providerListEl = document.getElementById('provider-list');
+      const bootstrapButtonEl = document.getElementById('bootstrap-core');
+      const bootstrapStatusEl = document.getElementById('bootstrap-status');
+      const sealButtonEl = document.getElementById('seal-core');
+      const sealStatusEl = document.getElementById('seal-status');
+      const providerButtonEl = document.getElementById('bootstrap-provider');
+      const providerStatusEl = document.getElementById('provider-status');
+      const providerSecondaryButtonEl = document.getElementById('bootstrap-provider-anthropic');
+      const providerSecondaryStatusEl = document.getElementById('provider-secondary-status');
+      const providerCopilotButtonEl = document.getElementById('bootstrap-provider-copilot');
+      const providerCopilotStatusEl = document.getElementById('provider-copilot-status');
+      const chatMessagesEl = document.getElementById('chat-messages');
+      const chatInputEl = document.getElementById('chat-input');
+      const chatFormEl = document.getElementById('chat-form');
+      const chatStatusEl = document.getElementById('chat-status');
+      const chatTypingEl = document.getElementById('chat-typing');
+      const contextStatusEl = document.getElementById('context-status');
+      const memorySearchFormEl = document.getElementById('memory-search-form');
+      const memorySearchScopeEl = document.getElementById('memory-search-scope');
+      const memorySearchQueryEl = document.getElementById('memory-search-query');
+      const memorySearchStatusEl = document.getElementById('memory-search-status');
+      const memoryCapsuleListEl = document.getElementById('memory-capsule-list');
+      const memorySearchResultsEl = document.getElementById('memory-search-results');
+      const memoryRelevanceListEl = document.getElementById('memory-relevance-list');
+      const roomMemoryRelevanceListEl = document.getElementById('room-memory-relevance-list');
+      const globalMemoryRelevanceListEl = document.getElementById('global-memory-relevance-list');
+      const summaryListEl = document.getElementById('summary-list');
+      const bridgeListEl = document.getElementById('bridge-list');
+      const triggerListEl = document.getElementById('trigger-list');
+      const promotionListEl = document.getElementById('promotion-list');
+      const contextPacketViewEl = document.getElementById('context-packet-view');
+      const macroStatusViewEl = document.getElementById('macro-status-view');
+      const macroMenuViewEl = document.getElementById('macro-menu-view');
+      const controlPlaneViewEl = document.getElementById('control-plane-view');
+      const providerReadinessViewEl = document.getElementById('provider-readiness-view');
+      const distillerStatusViewEl = document.getElementById('distiller-status-view');
+      const securityStatusViewEl = document.getElementById('security-status-view');
+      const capsuleTrustViewEl = document.getElementById('capsule-trust-view');
+      const marketplaceViewEl = document.getElementById('marketplace-view');
+      const approvalsViewEl = document.getElementById('approvals-view');
+      const worldStateViewEl = document.getElementById('world-state-view');
+      const autonomyStatusViewEl = document.getElementById('autonomy-status-view');
+      const autonomyStatusLineEl = document.getElementById('autonomy-status-line');
+      const toggleAutonomyEl = document.getElementById('toggle-autonomy');
+      const memoryPolicyFormEl = document.getElementById('memory-policy-form');
+      const hotLimitEl = document.getElementById('hot-limit');
+      const relevantLimitEl = document.getElementById('relevant-limit');
+      const promotionThresholdEl = document.getElementById('promotion-threshold');
+      const worldStateScopeEl = document.getElementById('world-state-scope');
+      const worldEntryLimitEl = document.getElementById('world-entry-limit');
+      const worldProcessLimitEl = document.getElementById('world-process-limit');
+      const stablePromotionToggleEl = document.getElementById('stable-promotion-toggle');
+      const fieldvaultSealingToggleEl = document.getElementById('fieldvault-sealing-toggle');
+      const worldStateToggleEl = document.getElementById('world-state-toggle');
+      const memoryPolicyStatusEl = document.getElementById('memory-policy-status');
+
+      const state = {
+        sessions: [],
+        turns: [],
+        dispatches: [],
+        memoryCapsules: [],
+        summaries: [],
+        bridges: [],
+        triggers: [],
+        promotions: [],
+        contextPacket: null,
+        events: [],
+        mandalas: [],
+        capsules: [],
+        capsulePackages: [],
+        capsulePreview: null,
+        slots: [],
+        artifacts: [],
+        providers: [],
+        macroStatus: null,
+        controlPlane: null,
+        providerReadiness: null,
+        distillerStatus: null,
+        securityStatus: null,
+        capsuleTrustStatus: null,
+        marketplaceStatus: null,
+        approvals: null,
+        worldState: null,
+        autonomyStatus: null,
+        memorySearch: null
+      };
+
+      function renderInventory(data) {
+        const inventory = data.inventory || {};
+        const items = [
+          ['sessions', inventory.sessions ?? 0],
+          ['events', inventory.events ?? 0],
+          ['mandalas', inventory.mandalas ?? 0],
+          ['capsules', inventory.capsules ?? 0],
+          ['capsule packages', inventory.capsule_packages ?? 0],
+          ['slots', inventory.slots ?? 0],
+          ['fieldvault', inventory.fieldvault_artifacts ?? 0],
+          ['providers', inventory.provider_lanes ?? 0],
+          ['dispatches', inventory.turn_dispatches ?? 0],
+          ['summaries', inventory.summary_checkpoints ?? 0],
+          ['bridges', inventory.memory_bridges ?? 0],
+          ['triggers', inventory.resynthesis_triggers ?? 0],
+          ['promotions', inventory.memory_promotions ?? 0],
+          ['approvals', inventory.approval_requests ?? 0],
+          ['world nodes', inventory.world_state_nodes ?? 0],
+          ['world deltas', inventory.world_state_deltas ?? 0],
+        ];
+        statsEl.innerHTML = items.map(([label, value]) => `
+          <div class="stat">
+            <div class="value">${value}</div>
+            <div class="label">${label}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderBar(percent) {
+        const filled = Math.max(0, Math.min(10, Math.round((percent || 0) / 10)));
+        return '[' + '█'.repeat(filled) + '░'.repeat(10 - filled) + ']';
+      }
+
+      function packageLifecycleLabel(status) {
+        switch (status) {
+          case 'installed': return 'Installed in house';
+          case 'install_ready': return 'Ready to install';
+          case 'awaiting_approval': return 'Awaiting approval';
+          case 'approved_for_install': return 'Approved for install';
+          case 'available': return 'Available locally';
+          case 'uninstalled': return 'Uninstalled, registry kept';
+          case 'upgrade_ready': return 'Upgrade ready';
+          case 'update_available': return 'Update available';
+          case 'install_denied': return 'Install denied';
+          case 'imported': return 'Imported, not installed';
+          default: return status || 'Unknown';
+        }
+      }
+
+      function packageLifecycleWarning(pkg) {
+        if (!pkg) return 'No package selected.';
+        if (pkg.trust_level && !['internal', 'trusted'].includes(String(pkg.trust_level).toLowerCase())) {
+          return 'This capsule is not yet trusted by the house.';
+        }
+        switch (pkg.install_status) {
+          case 'awaiting_approval':
+            return 'Approval is required before installation can continue.';
+          case 'install_denied':
+            return 'The house denied installation for this package.';
+          case 'approved_for_install':
+            return 'This package is approved and ready for activation.';
+          case 'update_available':
+            return 'A newer package revision exists; review before relying on the active slot.';
+          case 'upgrade_ready':
+            return 'This package can now be upgraded.';
+          case 'uninstalled':
+            return 'The package is no longer installed, but provenance is preserved.';
+          default:
+            return 'No blocking lifecycle warning.';
+        }
+      }
+
+      function renderMacroStatus() {
+        if (!state.macroStatus) {
+          macroStatusViewEl.innerHTML = '<div class="empty">Macro panorama not loaded yet.</div>';
+          macroMenuViewEl.innerHTML = '<div class="empty">Macro menu not loaded yet.</div>';
+          return;
+        }
+        const macro = state.macroStatus;
+        const axes = [macro.retrobuilder, macro.l1ght, macro.project, ...(macro.subsystems || [])];
+        macroStatusViewEl.innerHTML = axes.map(axis => `
+          <div class="card">
+            <strong>${escapeHtml(axis.label)}</strong>
+            <div class="meta">${escapeHtml(renderBar(axis.percent))} ${escapeHtml(axis.percent)}%</div>
+            <div class="meta">${escapeHtml(axis.phase)} / ${escapeHtml(axis.summary)}</div>
+            <div class="meta">steps remaining: ${escapeHtml(axis.steps_remaining ?? 0)}</div>
+          </div>
+        `).join('') + `
+          <div class="card">
+            <strong>Step Estimates</strong>
+            <div class="meta">phase steps remaining: ${escapeHtml(macro.current_phase_steps_remaining ?? 0)}</div>
+            <div class="meta">project steps remaining: ${escapeHtml(macro.project_steps_remaining ?? 0)}</div>
+          </div>
+          <div class="card">
+            <strong>Done</strong>
+            ${(macro.done || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+          <div class="card">
+            <strong>Doing</strong>
+            ${(macro.doing || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+          <div class="card">
+            <strong>Next</strong>
+            ${(macro.next || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+          <div class="card">
+            <strong>Later</strong>
+            ${(macro.later || []).map(item => `<div class="meta">- ${escapeHtml(item)}</div>`).join('')}
+          </div>
+        `;
+        macroMenuViewEl.innerHTML = (macro.menu || []).map(item => `
+          <div class="card">
+            <strong>[${escapeHtml(item.key)}] ${escapeHtml(item.prompt)}</strong>
+          </div>
+        `).join('');
+      }
+
+      function renderControlPlane() {
+        if (!state.controlPlane) {
+          controlPlaneViewEl.innerHTML = '<div class="empty">Control plane map not loaded yet.</div>';
+          return;
+        }
+        controlPlaneViewEl.innerHTML = (state.controlPlane.sections || []).map(section => `
+          <div class="card">
+            <strong>${escapeHtml(section.label)}</strong>
+            <div class="meta">status: ${escapeHtml(section.status)}</div>
+            <div class="meta">priority: ${escapeHtml(section.priority)}</div>
+            <div class="meta">${escapeHtml(section.summary)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderProviderReadiness() {
+        if (!state.providerReadiness) {
+          providerReadinessViewEl.innerHTML = '<div class="empty">Provider readiness not loaded yet.</div>';
+          return;
+        }
+        providerReadinessViewEl.innerHTML = (state.providerReadiness.providers || []).map(provider => `
+          <div class="card">
+            <strong>${escapeHtml(provider.provider)}</strong>
+            <div class="meta">ready: ${escapeHtml(provider.ready ? 'yes' : 'no')}</div>
+            <div class="meta">source: ${escapeHtml(provider.source)}</div>
+            <div class="meta">${escapeHtml(provider.details)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderDistillerStatus() {
+        if (!state.distillerStatus) {
+          distillerStatusViewEl.innerHTML = '<div class="empty">Distiller status not loaded yet.</div>';
+          return;
+        }
+        const status = state.distillerStatus;
+        distillerStatusViewEl.innerHTML = `
+          <div class="card">
+            <strong>Transcript Distiller</strong>
+            <div class="meta">running: ${escapeHtml(status.running ? 'yes' : 'no')}</div>
+            <div class="meta">pending: ${escapeHtml(status.pending)}</div>
+            <div class="meta">processed: ${escapeHtml(status.processed)}</div>
+            <div class="meta">failed: ${escapeHtml(status.failed)}</div>
+            <div class="meta">last error: ${escapeHtml(status.last_error || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderSecurityStatus() {
+        if (!state.securityStatus) {
+          securityStatusViewEl.innerHTML = '<div class="empty">Security surface not loaded yet.</div>';
+          return;
+        }
+        const security = state.securityStatus;
+        securityStatusViewEl.innerHTML = `
+          <div class="card">
+            <strong>Policy Baseline</strong>
+            <div class="meta">active mandala: ${escapeHtml(security.active_mandala_id || 'none')}</div>
+            <div class="meta">preferred provider: ${escapeHtml(security.preferred_provider || 'none')}</div>
+            <div class="meta">preferred model: ${escapeHtml(security.preferred_model || 'none')}</div>
+            <div class="meta">fieldvault sealing: ${escapeHtml(security.sealing_enabled ? 'on' : 'off')}</div>
+            <div class="meta">seal classes: ${escapeHtml((security.seal_privacy_classes || []).join(' | ') || 'none')}</div>
+            <div class="meta">declared capabilities: ${escapeHtml(security.capability_declared)}</div>
+            <div class="meta">required capabilities: ${escapeHtml(security.capability_required)}</div>
+            <div class="meta">optional capabilities: ${escapeHtml(security.capability_optional)}</div>
+            <div class="meta">skill packs: ${escapeHtml(security.skill_packs)}</div>
+            <div class="meta">sacred shards: ${escapeHtml(security.sacred_shards)}</div>
+            <div class="meta">sealed artifacts: ${escapeHtml(security.artifacts_total)}</div>
+            <div class="meta">artifact levels: ${escapeHtml((security.artifact_seal_levels || []).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderCapsuleTrustStatus() {
+        if (!state.capsuleTrustStatus) {
+          capsuleTrustViewEl.innerHTML = '<div class="empty">Capsule trust surface not loaded yet.</div>';
+          return;
+        }
+        const trust = state.capsuleTrustStatus;
+        const trustLevels = trust.trust_levels || [];
+        const packages = trust.packages || [];
+        capsuleTrustViewEl.innerHTML = `
+          <div class="card">
+            <strong>Capsule Trust</strong>
+            <div class="meta">total packages: ${escapeHtml(trust.total_packages ?? 0)}</div>
+            <div class="meta">internal packages: ${escapeHtml(trust.internal_packages ?? 0)}</div>
+            <div class="meta">external packages: ${escapeHtml(trust.external_packages ?? 0)}</div>
+            <div class="meta">trust levels: ${escapeHtml(trustLevels.map(level => `${level.trust_level}:${level.packages}`).join(' | ') || 'none')}</div>
+            <div class="meta">packages: ${escapeHtml(packages.map(pkg => `${pkg.display_name || pkg.package_id}(${pkg.trust_level})`).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderMarketplaceStatus() {
+        if (!state.marketplaceStatus) {
+          marketplaceViewEl.innerHTML = '<div class="empty">Marketplace shell not loaded yet.</div>';
+          return;
+        }
+        const marketplace = state.marketplaceStatus;
+        const entries = marketplace.entries || [];
+        const recentImports = marketplace.recent_imports || [];
+        const recentExports = marketplace.recent_exports || [];
+        marketplaceViewEl.innerHTML = `
+          <div class="card">
+            <strong>Marketplace Shell</strong>
+            <div class="meta">entries: ${escapeHtml(marketplace.total_entries ?? 0)}</div>
+            <div class="meta">installable: ${escapeHtml(marketplace.installable_entries ?? 0)}</div>
+            <div class="meta">trusted: ${escapeHtml(marketplace.trusted_entries ?? 0)}</div>
+            <div class="meta">imports: ${escapeHtml(marketplace.total_imports ?? 0)}</div>
+            <div class="meta">exports: ${escapeHtml(marketplace.total_exports ?? 0)}</div>
+          </div>
+          ${entries.length ? entries.map(entry => `
+            <div class="card">
+              <strong>${escapeHtml(entry.display_name || entry.package_id)}</strong>
+              <div class="meta">package: ${escapeHtml(entry.package_id)}</div>
+              <div class="meta">version: ${escapeHtml(entry.version)}</div>
+              <div class="meta">creator: ${escapeHtml(entry.creator)}</div>
+              <div class="meta">source: ${escapeHtml(entry.source_origin)}</div>
+              <div class="meta">trust: ${escapeHtml(entry.trust_level)}</div>
+              <div class="meta">install status: ${escapeHtml(packageLifecycleLabel(entry.install_status))}</div>
+              <div class="meta">warning: ${escapeHtml(packageLifecycleWarning(entry))}</div>
+              <div class="actions">
+                <button onclick="previewCapsulePackage('${escapeHtml(entry.package_id)}')">Preview</button>
+                <button onclick="requestCapsuleInstall('${escapeHtml(entry.package_id)}')">Install</button>
+                <button onclick="activateCapsulePackage('${escapeHtml(entry.package_id)}')">Activate</button>
+                <button onclick="deactivateCapsulePackage('${escapeHtml(entry.package_id)}')">Deactivate</button>
+                <button onclick="uninstallCapsulePackage('${escapeHtml(entry.package_id)}')">Uninstall</button>
+                <button onclick="upgradeCapsulePackage('${escapeHtml(entry.package_id)}')">Upgrade</button>
+                <button onclick="exportCapsulePackage('${escapeHtml(entry.package_id)}')">Export</button>
+              </div>
+            </div>
+          `).join('') : '<div class="empty">No marketplace entries yet.</div>'}
+          ${recentImports.length ? `
+            <div class="card">
+              <strong>Recent Imports</strong>
+              ${recentImports.map(item => `
+                <div class="meta">${escapeHtml(item.package_id)} <- ${escapeHtml(item.source_origin)} (${escapeHtml(item.import_status)})</div>
+              `).join('')}
+            </div>
+          ` : '<div class="empty">No capsule imports recorded yet.</div>'}
+          ${recentExports.length ? `
+            <div class="card">
+              <strong>Recent Exports</strong>
+              ${recentExports.map(item => `
+                <div class="meta">${escapeHtml(item.package_id)} -> ${escapeHtml(item.target_path)} (${escapeHtml(item.export_status)})</div>
+              `).join('')}
+            </div>
+          ` : '<div class="empty">No capsule exports recorded yet.</div>'}
+        `;
+      }
+
+      function renderApprovals() {
+        if (!state.approvals) {
+          approvalsViewEl.innerHTML = '<div class="empty">Approval surface not loaded yet.</div>';
+          return;
+        }
+        const status = state.approvals;
+        const approvals = status.approvals || [];
+        approvalsViewEl.innerHTML = `
+          <div class="card">
+            <strong>Approval Status</strong>
+            <div class="meta">pending: ${escapeHtml(status.pending ?? 0)}</div>
+            <div class="meta">granted: ${escapeHtml(status.granted ?? 0)}</div>
+            <div class="meta">denied: ${escapeHtml(status.denied ?? 0)}</div>
+          </div>
+          ${approvals.length ? approvals.map(approval => `
+            <div class="card">
+              <strong>${escapeHtml(approval.action)}</strong>
+              <div class="meta">status: ${escapeHtml(approval.status)}</div>
+              <div class="meta">dispatch: ${escapeHtml(approval.dispatch_id)}</div>
+              <div class="meta">provider lane: ${escapeHtml(approval.provider_lane_id)}</div>
+              <div class="meta">reason: ${escapeHtml(approval.reason)}</div>
+              ${approval.status === 'pending' ? `<div class="action-row">
+                <button onclick="grantApproval('${escapeHtml(approval.approval_request_id)}')">Grant</button>
+                <button onclick="denyApproval('${escapeHtml(approval.approval_request_id)}')">Deny</button>
+              </div>` : ''}
+            </div>
+          `).join('') : '<div class="empty">No approvals requested yet.</div>'}
+        `;
+      }
+
+      function renderWorldState() {
+        if (!state.worldState) {
+          worldStateViewEl.innerHTML = '<div class="empty">World state not loaded yet.</div>';
+          return;
+        }
+        const world = state.worldState;
+        const slice = world.slice || {};
+        worldStateViewEl.innerHTML = `
+          <div class="card">
+            <strong>World State Slice</strong>
+            <div class="meta">active mandala: ${escapeHtml(world.active_mandala_id || 'none')}</div>
+            <div class="meta">preferred scope: ${escapeHtml(world.preferred_scope || 'none')}</div>
+            <div class="meta">lookup sources: ${escapeHtml((world.lookup_sources || []).join(' | ') || 'none')}</div>
+            <div class="meta">world state enabled: ${escapeHtml(slice.scope === 'disabled' ? 'no' : 'yes')}</div>
+            <div class="meta">workspace root: ${escapeHtml(slice.workspace_root || 'none')}</div>
+            <div class="meta">workspace health: ${escapeHtml(slice.workspace_health || 'unknown')}</div>
+            <div class="meta">git dirty: ${escapeHtml(slice.git_dirty ? 'yes' : 'no')}</div>
+            <div class="meta">cache state: ${escapeHtml(slice.cache_state || 'cold')}</div>
+            <div class="meta">indexed nodes: ${escapeHtml(slice.indexed_nodes ?? 0)}</div>
+            <div class="meta">relations: ${escapeHtml(slice.relation_count ?? 0)}</div>
+            <div class="meta">workspace entries: ${escapeHtml(slice.workspace_entry_count ?? 0)}</div>
+            <div class="meta">processes shown: ${escapeHtml((slice.running_processes || []).length)}</div>
+          </div>
+          <div class="card">
+            <strong>Workspace Snapshot</strong>
+            ${((slice.workspace_entries || []).map(entry => `<div class="meta">- [${escapeHtml(entry.kind)}:${escapeHtml(entry.size_bytes)}] ${escapeHtml(entry.path)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Changed Files</strong>
+            ${((slice.changed_files || []).map(path => `<div class="meta">- ${escapeHtml(path)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Recent Deltas</strong>
+            ${((slice.recent_deltas || []).map(delta => `<div class="meta">- ${escapeHtml(delta)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Recent Relations</strong>
+            ${((slice.recent_relations || []).map(relation => `<div class="meta">- ${escapeHtml(relation)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+          <div class="card">
+            <strong>Process Snapshot</strong>
+            ${((slice.running_processes || []).map(process => `<div class="meta">- pid=${escapeHtml(process.pid)} ${escapeHtml(process.command)}</div>`).join('')) || '<div class="meta">- none</div>'}
+          </div>
+        `;
+      }
+
+      function renderAutonomyStatus() {
+        if (!state.autonomyStatus) {
+          autonomyStatusViewEl.innerHTML = '<div class="empty">Autonomy surface not loaded yet.</div>';
+          return;
+        }
+        const autonomy = state.autonomyStatus;
+        autonomyStatusLineEl.textContent = autonomy.enabled
+          ? `autonomy enabled / ${autonomy.mission_phase || 'steady'}`
+          : 'autonomy paused';
+        autonomyStatusViewEl.innerHTML = `
+          <div class="card">
+            <strong>Autonomy Loop</strong>
+            <div class="meta">enabled: ${escapeHtml(autonomy.enabled ? 'yes' : 'no')}</div>
+            <div class="meta">running: ${escapeHtml(autonomy.running ? 'yes' : 'no')}</div>
+            <div class="meta">cycles: ${escapeHtml(autonomy.cycles)}</div>
+            <div class="meta">completed dispatches: ${escapeHtml(autonomy.completed_dispatches)}</div>
+            <div class="meta">transition count: ${escapeHtml(autonomy.transition_count ?? 0)}</div>
+            <div class="meta">last transition: ${escapeHtml(autonomy.last_transition || 'none')}</div>
+            <div class="meta">mission phase: ${escapeHtml(autonomy.mission_phase || 'steady')}</div>
+            <div class="meta">current goal: ${escapeHtml(autonomy.current_goal || 'none')}</div>
+            <div class="meta">next actions: ${escapeHtml((autonomy.next_actions || []).join(' | ') || 'none')}</div>
+            <div class="meta">queued dispatches: ${escapeHtml(autonomy.queued_dispatch_count ?? 0)}</div>
+            <div class="meta">awaiting approvals: ${escapeHtml(autonomy.awaiting_approval_count ?? 0)}</div>
+            <div class="meta">recommended next step: ${escapeHtml(autonomy.recommended_next_step || 'none')}</div>
+            <div class="meta">transition guidance: ${escapeHtml(autonomy.transition_guidance || 'none')}</div>
+            <div class="meta">last dispatch: ${escapeHtml(autonomy.last_dispatch_id || 'none')}</div>
+            <div class="meta">last intent: ${escapeHtml(autonomy.last_intent_summary || 'none')}</div>
+            <div class="meta">selection reason: ${escapeHtml(autonomy.last_selection_reason || 'none')}</div>
+            <div class="meta">last error: ${escapeHtml(autonomy.last_error || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderSessions() {
+        if (!state.sessions.length) {
+          sessionListEl.innerHTML = '<div class="empty">No sessions yet. Create the next ANOMALY room.</div>';
+          return;
+        }
+        sessionListEl.innerHTML = state.sessions.map(session => `
+          <div class="card">
+            <strong>${escapeHtml(session.title)}</strong>
+            <div class="meta">session: ${escapeHtml(session.session_id?.[0] || session.session_id || '')}</div>
+            <div class="meta">room: ${escapeHtml(session.room_id || 'default')}</div>
+            <div class="meta">active lane: ${escapeHtml(session.active_lane_id?.[0] || session.active_lane_id || '')}</div>
+            <div class="meta">state: ${escapeHtml(session.state)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderEvents() {
+        if (!state.events.length) {
+          eventFeedEl.innerHTML = '<div class="empty">Waiting for the first house pulse.</div>';
+          return;
+        }
+        const events = [...state.events].slice(-40).reverse();
+        eventFeedEl.innerHTML = events.map(event => `
+          <div class="event">
+            <div class="event-type">${escapeHtml(event.event_type)}</div>
+            <div class="meta">event: ${escapeHtml(event.event_id)}</div>
+            <div class="meta">session: ${escapeHtml(event.session_id || 'none')}</div>
+            <div class="meta">actor: ${escapeHtml(event.actor?.actor_id || 'unknown')}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderTurns() {
+        if (!state.turns.length) {
+          turnListEl.innerHTML = '<div class="empty">No turns dispatched yet.</div>';
+          return;
+        }
+        turnListEl.innerHTML = state.turns.map(turn => `
+          <div class="card">
+            <strong>${escapeHtml(turn.intent_mode)}</strong>
+            <div class="meta">turn: ${escapeHtml(turn.turn_id?.[0] || turn.turn_id || '')}</div>
+            <div class="meta">session: ${escapeHtml(turn.session_id?.[0] || turn.session_id || '')}</div>
+            <div class="meta">lane: ${escapeHtml(turn.lane_id?.[0] || turn.lane_id || '')}</div>
+            <div class="meta">state: ${escapeHtml(turn.state)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderDispatches() {
+        if (!state.dispatches.length) {
+          dispatchListEl.innerHTML = '<div class="empty">No provider dispatches yet.</div>';
+          return;
+        }
+        dispatchListEl.innerHTML = state.dispatches.map(dispatch => `
+          <div class="card">
+            <strong>${escapeHtml(dispatch.intent_summary)}</strong>
+            <div class="meta">dispatch: ${escapeHtml(dispatch.dispatch_id)}</div>
+            <div class="meta">provider lane: ${escapeHtml(dispatch.provider_lane_id)}</div>
+            <div class="meta">turn: ${escapeHtml(dispatch.turn_id?.[0] || dispatch.turn_id || '')}</div>
+            <div class="meta">status: ${escapeHtml(dispatch.status)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderMandalas() {
+        if (!state.mandalas.length) {
+          mandalaListEl.innerHTML = '<div class="empty">No mandalas installed yet.</div>';
+          syncMemoryPolicyForm(null);
+          return;
+        }
+        mandalaListEl.innerHTML = state.mandalas.map(mandala => `
+          <div class="card">
+            <strong>${escapeHtml(mandala.self_section?.id || 'unknown')}</strong>
+            <div class="meta">role: ${escapeHtml(mandala.self_section?.role || 'unknown')}</div>
+            <div class="meta">soul: ${escapeHtml(mandala.self_section?.template_soul || 'unknown')}</div>
+            <div class="meta">provider: ${escapeHtml(mandala.execution_policy?.preferred_provider || 'unknown')}</div>
+            <div class="meta">goal: ${escapeHtml(mandala.active_snapshot?.current_goal || 'none')}</div>
+          </div>
+        `).join('');
+        syncMemoryPolicyForm(state.mandalas[0]);
+      }
+
+      function syncMemoryPolicyForm(mandala) {
+        const policy = mandala?.memory_policy;
+        if (!policy) {
+          memoryPolicyStatusEl.textContent = 'install a mandala to edit policy';
+          return;
+        }
+        hotLimitEl.value = policy.hot_context_limit ?? 5;
+        relevantLimitEl.value = policy.relevant_context_limit ?? 5;
+        promotionThresholdEl.value = policy.promotion_confidence_threshold ?? 0.9;
+        worldStateScopeEl.value = policy.world_state_scope || 'workspace+process';
+        worldEntryLimitEl.value = policy.world_state_entry_limit ?? 8;
+        worldProcessLimitEl.value = policy.world_state_process_limit ?? 8;
+        stablePromotionToggleEl.checked = !!policy.promote_to_stable_memory;
+        fieldvaultSealingToggleEl.checked = !!policy.allow_fieldvault_sealing;
+        worldStateToggleEl.checked = !!policy.allow_world_state;
+        memoryPolicyStatusEl.textContent = `${mandala.self_section?.id || 'mandala'} policy loaded`;
+      }
+
+      function renderCapsules() {
+        if (!state.capsules.length) {
+          capsuleListEl.innerHTML = '<div class="empty">No capsules installed yet.</div>';
+          capsulePreviewViewEl.innerHTML = '<div class="empty">No capsule install preview loaded yet.</div>';
+        } else {
+          const packageMap = new Map((state.capsulePackages || []).map(pkg => [pkg.capsule_id, pkg]));
+          capsuleListEl.innerHTML = state.capsules.map(capsule => {
+            const pkg = packageMap.get(capsule.capsule_id);
+            return `
+            <div class="card">
+              <strong>${escapeHtml(capsule.capsule_id)}</strong>
+              <div class="meta">mandala: ${escapeHtml(capsule.mandala_id)}</div>
+              <div class="meta">version: ${escapeHtml(capsule.version)}</div>
+              <div class="meta">source: ${escapeHtml(capsule.install_source)}</div>
+              <div class="meta">package: ${escapeHtml(pkg?.package_id || 'none')}</div>
+              <div class="meta">trust: ${escapeHtml(pkg?.trust_level || 'unknown')}</div>
+              <div class="meta">creator: ${escapeHtml(pkg?.creator || 'unknown')}</div>
+              <div class="actions">
+                <button onclick="previewCapsulePackage('${escapeHtml(pkg?.package_id || '')}')">Preview</button>
+                <button onclick="classifyCapsuleTrust('${escapeHtml(pkg?.package_id || '')}', '${escapeHtml(pkg?.trust_level || 'internal')}')">Trust</button>
+              </div>
+            </div>
+          `}).join('');
+        }
+        renderCapsulePreview();
+      }
+
+      function renderCapsulePreview() {
+        if (!state.capsulePreview) {
+          capsulePreviewViewEl.innerHTML = '<div class="empty">No capsule install preview loaded yet.</div>';
+          return;
+        }
+        const preview = state.capsulePreview;
+        capsulePreviewViewEl.innerHTML = `
+          <div class="card">
+            <strong>Install Preview / ${escapeHtml(preview.package?.display_name || preview.package?.package_id || 'unknown')}</strong>
+            <div class="meta">package: ${escapeHtml(preview.package?.package_id || 'unknown')}</div>
+            <div class="meta">trust: ${escapeHtml(preview.package?.trust_level || 'unknown')}</div>
+            <div class="meta">install status: ${escapeHtml(packageLifecycleLabel(preview.package?.install_status))}</div>
+            <div class="meta">slot recommendation: ${escapeHtml(preview.slot_recommendation || 'none')}</div>
+            <div class="meta">fieldvault requirements: ${escapeHtml(preview.fieldvault_requirements ?? 0)}</div>
+            <div class="meta">required caps: ${escapeHtml((preview.required_capabilities || []).join(' | ') || 'none')}</div>
+            <div class="meta">optional caps: ${escapeHtml((preview.optional_capabilities || []).join(' | ') || 'none')}</div>
+            <div class="meta">${escapeHtml(preview.install_preview_summary || 'no summary')}</div>
+            <div class="meta">warning: ${escapeHtml(packageLifecycleWarning(preview.package))}</div>
+            <div class="actions">
+              <button onclick="requestCapsuleInstall('${escapeHtml(preview.package?.package_id || '')}')">Request Install</button>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderSlots() {
+        if (!state.slots.length) {
+          slotListEl.innerHTML = '<div class="empty">No personality slots yet.</div>';
+          return;
+        }
+        slotListEl.innerHTML = state.slots.map(slot => `
+          <div class="card">
+            <strong>${escapeHtml(slot.label)}</strong>
+            <div class="meta">slot: ${escapeHtml(slot.slot_id)}</div>
+            <div class="meta">state: ${escapeHtml(slot.state)}</div>
+            <div class="meta">capsule: ${escapeHtml(slot.capsule_id || 'none')}</div>
+            <div class="meta">mandala: ${escapeHtml(slot.active_mandala_id || 'none')}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderArtifacts() {
+        if (!state.artifacts.length) {
+          artifactListEl.innerHTML = '<div class="empty">No fieldvault artifacts sealed yet.</div>';
+          return;
+        }
+        artifactListEl.innerHTML = state.artifacts.map(artifact => `
+          <div class="card">
+            <strong>${escapeHtml(artifact.artifact_id)}</strong>
+            <div class="meta">seal: ${escapeHtml(artifact.seal_level)}</div>
+            <div class="meta">capsule: ${escapeHtml(artifact.capsule_id || 'none')}</div>
+            <div class="meta">slot: ${escapeHtml(artifact.slot_id || 'none')}</div>
+            <div class="meta">path: ${escapeHtml(artifact.fld_path)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderProviders() {
+        if (!state.providers.length) {
+          providerListEl.innerHTML = '<div class="empty">No provider lanes connected yet.</div>';
+          return;
+        }
+        const readinessMap = new Map((state.providerReadiness?.providers || []).map(provider => [provider.provider, provider]));
+        providerListEl.innerHTML = state.providers.map(provider => `
+          <div class="card">
+            <strong>${escapeHtml(provider.provider_lane_id)}</strong>
+            <div class="meta">provider: ${escapeHtml(provider.provider)}</div>
+            <div class="meta">model: ${escapeHtml(provider.model)}</div>
+            <div class="meta">routing: ${escapeHtml(provider.routing_mode)}</div>
+            <div class="meta">fallback group: ${escapeHtml(provider.fallback_group || 'none')}</div>
+            <div class="meta">priority: ${escapeHtml(provider.priority)}</div>
+            <div class="meta">status: ${escapeHtml(provider.status)}</div>
+            <div class="meta">ready: ${escapeHtml(readinessMap.get(provider.provider)?.ready ? 'yes' : 'no')}</div>
+            <div class="meta">auth source: ${escapeHtml(readinessMap.get(provider.provider)?.source || 'unknown')}</div>
+            <div class="meta">readiness details: ${escapeHtml(readinessMap.get(provider.provider)?.details || 'none')}</div>
+            <div class="meta">fallback rail: ${escapeHtml(`${provider.fallback_group || 'ungrouped'} / p${provider.priority}`)}</div>
+            <div class="actions"><button onclick="editProviderLane('${escapeHtml(provider.provider_lane_id)}', '${escapeHtml(provider.routing_mode)}', '${escapeHtml(provider.fallback_group || '')}', '${escapeHtml(provider.priority)}')">Edit lane</button></div>
+          </div>
+        `).join('');
+      }
+
+      function renderMemoryCapsules() {
+        if (!state.memoryCapsules.length) {
+          memoryCapsuleListEl.innerHTML = '<div class="empty">No memory capsules captured yet.</div>';
+          return;
+        }
+        memoryCapsuleListEl.innerHTML = state.memoryCapsules.slice(-6).reverse().map(capsule => `
+          <div class="card">
+            <strong>${escapeHtml(capsule.role)} / ${escapeHtml(capsule.band)}</strong>
+            <div class="meta">capsule: ${escapeHtml(capsule.memory_capsule_id)}</div>
+            <div class="meta">relevance: ${escapeHtml(capsule.relevance_score)}</div>
+            <div class="meta">confidence: ${escapeHtml(capsule.confidence_level)}</div>
+            <div class="meta">${escapeHtml(capsule.content)}</div>
+          </div>
+        `).join('');
+      }
+
+      function renderMemorySearch() {
+        if (!state.memorySearch) {
+          memorySearchResultsEl.innerHTML = '<div class="empty">No local search results yet.</div>';
+          return;
+        }
+        const search = state.memorySearch;
+        memorySearchStatusEl.textContent = `${search.scope} / ${search.query || 'empty query'} / ${search.results.length} results`;
+        memorySearchResultsEl.innerHTML = search.results.length
+          ? search.results.map(capsule => `
+            <div class="card">
+              <strong>search / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">scope: ${escapeHtml(search.scope)}</div>
+              <div class="meta">room: ${escapeHtml(capsule.room_id)}</div>
+              <div class="meta">session: ${escapeHtml(capsule.session_id)}</div>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No local search results yet.</div>';
+      }
+
+      function renderContextPacket() {
+        if (!state.contextPacket) {
+          contextPacketViewEl.innerHTML = '<div class="empty">No context packet loaded yet.</div>';
+          memorySearchResultsEl.innerHTML = '<div class="empty">No local search results yet.</div>';
+          memoryRelevanceListEl.innerHTML = '<div class="empty">No ranked memory candidates yet.</div>';
+          roomMemoryRelevanceListEl.innerHTML = '<div class="empty">No room-scoped memory candidates yet.</div>';
+          globalMemoryRelevanceListEl.innerHTML = '<div class="empty">No house-scoped memory candidates yet.</div>';
+          bridgeListEl.innerHTML = '<div class="empty">No memory bridges yet.</div>';
+          triggerListEl.innerHTML = '<div class="empty">No re-synthesis triggers yet.</div>';
+          promotionListEl.innerHTML = '<div class="empty">No memory promotions yet.</div>';
+          return;
+        }
+        const packet = state.contextPacket;
+        const relevant = packet.relevant_capsules || [];
+        const roomRelevant = packet.room_relevant_capsules || [];
+        const globalRelevant = packet.global_relevant_capsules || [];
+        const bridges = packet.memory_bridges || [];
+        const triggers = packet.resynthesis_triggers || [];
+        const promotions = packet.memory_promotions || [];
+        memoryRelevanceListEl.innerHTML = relevant.length
+          ? relevant.map(capsule => `
+            <div class="card">
+              <strong>relevant / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">confidence: ${escapeHtml(capsule.confidence_level)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No ranked memory candidates yet.</div>';
+        roomMemoryRelevanceListEl.innerHTML = roomRelevant.length
+          ? roomRelevant.map(capsule => `
+            <div class="card">
+              <strong>room relevant / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">room: ${escapeHtml(capsule.room_id)}</div>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No room-scoped memory candidates yet.</div>';
+        globalMemoryRelevanceListEl.innerHTML = globalRelevant.length
+          ? globalRelevant.map(capsule => `
+            <div class="card">
+              <strong>house relevant / ${escapeHtml(capsule.band)}</strong>
+              <div class="meta">room: ${escapeHtml(capsule.room_id)}</div>
+              <div class="meta">session: ${escapeHtml(capsule.session_id)}</div>
+              <div class="meta">score: ${escapeHtml(capsule.relevance_score)}</div>
+              <div class="meta">${escapeHtml(capsule.content)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No house-scoped memory candidates yet.</div>';
+        bridgeListEl.innerHTML = bridges.length
+          ? bridges.map(bridge => `
+            <div class="card">
+              <strong>bridge / ${escapeHtml(bridge.bridge_kind)}</strong>
+              <div class="meta">strength: ${escapeHtml(bridge.strength)}</div>
+              <div class="meta">from: ${escapeHtml(bridge.from_capsule_id)}</div>
+              <div class="meta">to: ${escapeHtml(bridge.to_capsule_id)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No memory bridges yet.</div>';
+        triggerListEl.innerHTML = triggers.length
+          ? triggers.map(trigger => `
+            <div class="card">
+              <strong>trigger / ${escapeHtml(trigger.trigger_kind)}</strong>
+              <div class="meta">confidence: ${escapeHtml(trigger.confidence_level)}</div>
+              <div class="meta">${escapeHtml(trigger.summary)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No re-synthesis triggers yet.</div>';
+        promotionListEl.innerHTML = promotions.length
+          ? promotions.map(promotion => `
+            <div class="card">
+              <strong>promotion / ${escapeHtml(promotion.target_plane)}</strong>
+              <div class="meta">confidence: ${escapeHtml(promotion.confidence_level)}</div>
+              <div class="meta">capsule: ${escapeHtml(promotion.memory_capsule_id)}</div>
+              <div class="meta">${escapeHtml(promotion.promoted_value)}</div>
+            </div>
+          `).join('')
+          : '<div class="empty">No memory promotions yet.</div>';
+        contextPacketViewEl.innerHTML = `
+          <div class="card">
+            <strong>Context Packet / ${escapeHtml(packet.session_id)}</strong>
+            <div class="meta">room: ${escapeHtml(packet.room_id || 'default')}</div>
+            <div class="meta">active mandala: ${escapeHtml(packet.active_mandala_id || 'none')}</div>
+            <div class="meta">providers: ${escapeHtml((packet.providers || []).join(', ') || 'none')}</div>
+            <div class="meta">query seed: ${escapeHtml(packet.query_seed || 'none')}</div>
+            <div class="meta">hot capsules: ${escapeHtml((packet.hot_capsules || []).length)}</div>
+            <div class="meta">relevant capsules: ${escapeHtml((packet.relevant_capsules || []).length)}</div>
+            <div class="meta">room capsules: ${escapeHtml((packet.room_relevant_capsules || []).length)}</div>
+            <div class="meta">house capsules: ${escapeHtml((packet.global_relevant_capsules || []).length)}</div>
+            <div class="meta">summaries: ${escapeHtml((packet.summary_checkpoints || []).length)}</div>
+            <div class="meta">bridges: ${escapeHtml((packet.memory_bridges || []).length)}</div>
+            <div class="meta">triggers: ${escapeHtml((packet.resynthesis_triggers || []).length)}</div>
+            <div class="meta">promotions: ${escapeHtml((packet.memory_promotions || []).length)}</div>
+            <div class="meta">world scope: ${escapeHtml(packet.world_state_slice?.scope || 'none')}</div>
+            <div class="meta">workspace health: ${escapeHtml(packet.world_state_slice?.workspace_health || 'unknown')}</div>
+            <div class="meta">git dirty: ${escapeHtml(packet.world_state_slice?.git_dirty ? 'yes' : 'no')}</div>
+            <div class="meta">world cache state: ${escapeHtml(packet.world_state_slice?.cache_state || 'cold')}</div>
+            <div class="meta">indexed world nodes: ${escapeHtml(packet.world_state_slice?.indexed_nodes ?? 0)}</div>
+            <div class="meta">world entries: ${escapeHtml(packet.world_state_slice?.workspace_entry_count ?? 0)}</div>
+            <div class="meta">changed files: ${escapeHtml((packet.world_state_slice?.changed_files || []).length)}</div>
+            <div class="meta">recent deltas: ${escapeHtml((packet.world_state_slice?.recent_deltas || []).length)}</div>
+            <div class="meta">world processes: ${escapeHtml((packet.world_state_slice?.running_processes || []).length)}</div>
+            <div class="meta">boot include: ${escapeHtml((packet.memory_policy?.boot_include || []).join(' | ') || 'none')}</div>
+            <div class="meta">lookup sources: ${escapeHtml((packet.memory_policy?.lookup_sources || []).join(' | ') || 'none')}</div>
+            <div class="meta">hot limit: ${escapeHtml(packet.memory_policy?.hot_context_limit ?? 0)}</div>
+            <div class="meta">relevant limit: ${escapeHtml(packet.memory_policy?.relevant_context_limit ?? 0)}</div>
+            <div class="meta">promotion threshold: ${escapeHtml(packet.memory_policy?.promotion_confidence_threshold ?? 0)}</div>
+            <div class="meta">stable promotion: ${escapeHtml(packet.memory_policy?.promote_to_stable_memory ? 'on' : 'off')}</div>
+            <div class="meta">fieldvault sealing: ${escapeHtml(packet.memory_policy?.allow_fieldvault_sealing ? 'on' : 'off')}</div>
+            <div class="meta">world state: ${escapeHtml(packet.memory_policy?.allow_world_state ? 'on' : 'off')}</div>
+            <div class="meta">world scope policy: ${escapeHtml(packet.memory_policy?.world_state_scope || 'none')}</div>
+            <div class="meta">world entry limit: ${escapeHtml(packet.memory_policy?.world_state_entry_limit ?? 0)}</div>
+            <div class="meta">world process limit: ${escapeHtml(packet.memory_policy?.world_state_process_limit ?? 0)}</div>
+            <div class="meta">seal classes: ${escapeHtml((packet.memory_policy?.seal_privacy_classes || []).join(' | ') || 'none')}</div>
+            <div class="meta">stable rules: ${escapeHtml((packet.stable_memory?.learned_rules || []).length)}</div>
+            <div class="meta">goal: ${escapeHtml(packet.active_snapshot?.current_goal || 'none')}</div>
+            <div class="meta">blockers: ${escapeHtml((packet.active_snapshot?.blockers || []).join(' | ') || 'none')}</div>
+            <div class="meta">next actions: ${escapeHtml((packet.active_snapshot?.next_actions || []).join(' | ') || 'none')}</div>
+          </div>
+        `;
+      }
+
+      function renderSummaries() {
+        if (!state.summaries.length) {
+          summaryListEl.innerHTML = '<div class="empty">No summary checkpoints yet.</div>';
+          return;
+        }
+        summaryListEl.innerHTML = state.summaries.slice(-4).reverse().map(summary => `
+          <div class="card">
+            <strong>${escapeHtml(summary.source_band)} summary</strong>
+            <div class="meta">checkpoint: ${escapeHtml(summary.summary_checkpoint_id)}</div>
+            <div class="meta">confidence: ${escapeHtml(summary.confidence_level)}</div>
+            <div class="meta">capsules: ${escapeHtml(summary.source_capsule_count)}</div>
+            <div class="meta">compression: ${escapeHtml(summary.digest_text_length)}/${escapeHtml(summary.source_text_length)} (${escapeHtml(summary.compression_ratio)})</div>
+            <div class="meta">digest: ${escapeHtml(summary.semantic_digest)}</div>
+          </div>
+        `).join('');
+      }
+
+      async function refreshInventory() {
+        const res = await fetch('/inventory');
+        const data = await res.json();
+        renderInventory(data);
+      }
+
+      async function refreshMacroStatus() {
+        const res = await fetch('/status/macro');
+        state.macroStatus = await res.json();
+        renderMacroStatus();
+      }
+
+      async function refreshControlPlane() {
+        const res = await fetch('/status/control-plane');
+        state.controlPlane = await res.json();
+        renderControlPlane();
+      }
+
+      async function refreshProviderReadiness() {
+        const res = await fetch('/status/provider-readiness');
+        state.providerReadiness = await res.json();
+        renderProviderReadiness();
+      }
+
+      async function refreshDistillerStatus() {
+        const res = await fetch('/status/distiller');
+        state.distillerStatus = await res.json();
+        renderDistillerStatus();
+      }
+
+      async function refreshSecurityStatus() {
+        const res = await fetch('/status/security');
+        state.securityStatus = await res.json();
+        renderSecurityStatus();
+      }
+
+      async function refreshCapsuleTrustStatus() {
+        const res = await fetch('/status/capsule-trust');
+        state.capsuleTrustStatus = await res.json();
+        renderCapsuleTrustStatus();
+      }
+
+      async function refreshMarketplaceStatus() {
+        const res = await fetch('/status/marketplace');
+        state.marketplaceStatus = await res.json();
+        renderMarketplaceStatus();
+      }
+
+      async function refreshApprovals() {
+        const res = await fetch('/status/approvals');
+        state.approvals = await res.json();
+        renderApprovals();
+      }
+
+      async function refreshWorldState() {
+        const res = await fetch('/status/world-state');
+        state.worldState = await res.json();
+        renderWorldState();
+      }
+
+      async function refreshAutonomyStatus() {
+        const res = await fetch('/status/autonomy');
+        state.autonomyStatus = await res.json();
+        renderAutonomyStatus();
+      }
+
+      async function toggleAutonomy() {
+        const enabled = !(state.autonomyStatus?.enabled ?? true);
+        const res = await fetch('/autonomy', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        if (!res.ok) {
+          throw new Error('failed to update autonomy state');
+        }
+        state.autonomyStatus = await res.json();
+        renderAutonomyStatus();
+      }
+
+      async function grantApproval(id) {
+        const res = await fetch(`/approvals/${encodeURIComponent(id)}/grant`, { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to grant approval');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshSecurityStatus(),
+          refreshApprovals(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshEvents()
+        ]);
+      }
+
+      async function denyApproval(id) {
+        const res = await fetch(`/approvals/${encodeURIComponent(id)}/deny`, { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to deny approval');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshSecurityStatus(),
+          refreshApprovals(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshEvents()
+        ]);
+      }
+
+      async function searchMemory() {
+        const query = memorySearchQueryEl.value.trim();
+        const scope = memorySearchScopeEl.value;
+        const sessionId = state.sessions[0]?.session_id;
+        const params = new URLSearchParams({ q: query, scope, limit: '8' });
+        if (sessionId) {
+          params.set('session_id', sessionId);
+        }
+        const res = await fetch(`/memory/search?${params.toString()}`);
+        state.memorySearch = await res.json();
+        renderMemorySearch();
+      }
+
+      async function updateMemoryPolicy() {
+        const mandala = state.mandalas[0];
+        if (!mandala?.self_section?.id) {
+          throw new Error('no mandala available to update');
+        }
+        memoryPolicyStatusEl.textContent = 'updating mandala memory policy…';
+        const res = await fetch(`/mandalas/${encodeURIComponent(mandala.self_section.id)}/memory-policy`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            hot_context_limit: Number(hotLimitEl.value || 5),
+            relevant_context_limit: Number(relevantLimitEl.value || 5),
+            promotion_confidence_threshold: Number(promotionThresholdEl.value || 0.9),
+            promote_to_stable_memory: stablePromotionToggleEl.checked,
+            allow_fieldvault_sealing: fieldvaultSealingToggleEl.checked,
+            world_state_scope: worldStateScopeEl.value,
+            world_state_entry_limit: Number(worldEntryLimitEl.value || 8),
+            world_state_process_limit: Number(worldProcessLimitEl.value || 8),
+            allow_world_state: worldStateToggleEl.checked
+          })
+        });
+        if (!res.ok) {
+          throw new Error('failed to update mandala memory policy');
+        }
+        const result = await res.json();
+        memoryPolicyStatusEl.textContent = `${result.mandala_id} policy updated`;
+        await Promise.all([
+          refreshMandalas(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshSecurityStatus(),
+          refreshWorldState(),
+          refreshAutonomyStatus(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
+      }
+
+      async function editProviderLane(providerLaneId, currentRoutingMode, currentFallbackGroup, currentPriority) {
+        const routingMode = window.prompt('Routing mode for this lane', currentRoutingMode || 'secondary');
+        if (routingMode === null) return;
+        const fallbackGroup = window.prompt('Fallback group for this lane (empty = none)', currentFallbackGroup || '');
+        if (fallbackGroup === null) return;
+        const priorityRaw = window.prompt('Priority for this lane (higher = preferred)', String(currentPriority || 0));
+        if (priorityRaw === null) return;
+        const priority = Number(priorityRaw);
+        if (!Number.isFinite(priority) || priority < 0) {
+          throw new Error('invalid lane priority');
+        }
+        const res = await fetch(`/providers/${encodeURIComponent(providerLaneId)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            routing_mode: routingMode.trim() || 'secondary',
+            fallback_group: fallbackGroup.trim(),
+            priority: Math.floor(priority)
+          })
+        });
+        if (!res.ok) {
+          throw new Error('failed to update provider lane');
+        }
+        await Promise.all([
+          refreshProviders(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshAutonomyStatus(),
+          refreshEvents()
+        ]);
+      }
+
+      async function refreshSessions() {
+        const res = await fetch('/sessions');
+        state.sessions = await res.json();
+        renderSessions();
+      }
+
+      async function refreshTurns() {
+        const res = await fetch('/turns');
+        state.turns = await res.json();
+        renderTurns();
+      }
+
+      async function refreshDispatches() {
+        const res = await fetch('/dispatches');
+        state.dispatches = await res.json();
+        renderDispatches();
+      }
+
+      async function refreshMandalas() {
+        const res = await fetch('/mandalas');
+        state.mandalas = await res.json();
+        renderMandalas();
+      }
+
+      async function refreshCapsules() {
+        const res = await fetch('/capsules');
+        state.capsules = await res.json();
+        renderCapsules();
+      }
+
+      async function refreshCapsulePackages() {
+        const res = await fetch('/capsule-packages');
+        state.capsulePackages = await res.json();
+        renderCapsules();
+      }
+
+      async function previewCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for preview');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/preview`);
+        if (!res.ok) {
+          throw new Error('failed to load capsule install preview');
+        }
+        state.capsulePreview = await res.json();
+        renderCapsulePreview();
+      }
+
+      async function classifyCapsuleTrust(packageId, currentTrustLevel) {
+        if (!packageId) {
+          throw new Error('no package id available for trust update');
+        }
+        const trustLevel = window.prompt('Trust level for this package', currentTrustLevel || 'internal');
+        if (trustLevel === null) return;
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/trust`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ trust_level: trustLevel.trim() || 'internal' })
+        });
+        if (!res.ok) {
+          throw new Error('failed to classify capsule trust');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function requestCapsuleInstall(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for install request');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/install-request`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to request capsule install');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshApprovals(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function importDemoCapsule() {
+        const res = await fetch('/bootstrap/import-demo-capsule', { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to import demo capsule');
+        }
+        const result = await res.json();
+        await Promise.all([
+          refreshCapsules(),
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(result.package.package_id);
+      }
+
+      async function exportCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for export');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/export`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to export capsule package');
+        }
+        await Promise.all([
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshEvents()
+        ]);
+      }
+
+      async function activateCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for activation');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/activate`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to activate capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshSlots(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function deactivateCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for deactivation');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/deactivate`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to deactivate capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshSlots(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function uninstallCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for uninstall');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/uninstall`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to uninstall capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshSlots(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshSecurityStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function upgradeCapsulePackage(packageId) {
+        if (!packageId) {
+          throw new Error('no package id available for upgrade');
+        }
+        const res = await fetch(`/capsule-packages/${encodeURIComponent(packageId)}/upgrade`, {
+          method: 'POST'
+        });
+        if (!res.ok) {
+          throw new Error('failed to upgrade capsule package');
+        }
+        await Promise.all([
+          refreshCapsulePackages(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshEvents()
+        ]);
+        await previewCapsulePackage(packageId);
+      }
+
+      async function refreshSlots() {
+        const res = await fetch('/slots');
+        state.slots = await res.json();
+        renderSlots();
+      }
+
+      async function refreshArtifacts() {
+        const res = await fetch('/artifacts');
+        state.artifacts = await res.json();
+        renderArtifacts();
+      }
+
+      async function refreshProviders() {
+        const res = await fetch('/providers');
+        state.providers = await res.json();
+        renderProviders();
+      }
+
+      async function refreshMemoryCapsules() {
+        const res = await fetch('/memory/capsules');
+        state.memoryCapsules = await res.json();
+        renderMemoryCapsules();
+      }
+
+      async function refreshSummaries() {
+        const res = await fetch('/memory/summaries');
+        state.summaries = await res.json();
+        renderSummaries();
+      }
+
+      async function refreshPromotions() {
+        const res = await fetch('/memory/promotions');
+        state.promotions = await res.json();
+      }
+
+      async function refreshContextPacket() {
+        const session = state.sessions[0];
+        if (!session) {
+          state.contextPacket = null;
+          renderContextPacket();
+          contextStatusEl.textContent = 'create a session to assemble context';
+          return;
+        }
+        const sessionId = session.session_id?.[0] || session.session_id;
+        const res = await fetch(`/context-packet/${sessionId}`);
+        state.contextPacket = await res.json();
+        renderContextPacket();
+        contextStatusEl.textContent = `context ready for ${sessionId}`;
+      }
+
+      async function refreshEvents() {
+        const res = await fetch('/events');
+        state.events = await res.json();
+        renderEvents();
+      }
+
+      async function createSession(title) {
+        const res = await fetch('/sessions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ title })
+        });
+        if (!res.ok) {
+          throw new Error('failed to create session');
+        }
+        const session = await res.json();
+        state.sessions.push(session);
+        renderSessions();
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshSummaries(), refreshPromotions(), refreshContextPacket()]);
+      }
+
+      async function createTurn(intentSummary) {
+        const session = state.sessions[0];
+        if (!session) {
+          throw new Error('create a session before dispatching a turn');
+        }
+        const sessionId = session.session_id?.[0] || session.session_id;
+        const res = await fetch('/turns', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            intent_mode: 'architect',
+            intent_summary: intentSummary
+          })
+        });
+        if (!res.ok) {
+          throw new Error('failed to create turn');
+        }
+        const result = await res.json();
+        turnStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.intent_mode}`;
+        await Promise.all([
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshDistillerStatus(),
+          refreshSecurityStatus(),
+          refreshCapsuleTrustStatus(),
+          refreshMarketplaceStatus(),
+          refreshApprovals(),
+          refreshWorldState(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshMemoryCapsules(),
+          refreshSummaries(),
+          refreshPromotions(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
+      }
+
+      async function executeLatestDispatch() {
+        executeStatusEl.textContent = 'executing latest dispatch…';
+        const res = await fetch('/dispatches/execute-latest', { method: 'POST' });
+        if (!res.ok) {
+          throw new Error('failed to execute latest dispatch');
+        }
+        const result = await res.json();
+        executeStatusEl.textContent = `${result.dispatch.provider_lane_id} -> ${result.turn.state}`;
+        await Promise.all([
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshDistillerStatus(),
+          refreshSecurityStatus(),
+          refreshApprovals(),
+          refreshWorldState(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshMemoryCapsules(),
+          refreshSummaries(),
+          refreshPromotions(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
+      }
+
+      async function executeLatestDispatchLive() {
+        executeLiveStatusEl.textContent = 'running codex live lane…';
+        const res = await fetch('/dispatches/execute-latest-live', { method: 'POST' });
+        if (!res.ok) {
+          const message = await res.text();
+          throw new Error(message || 'failed to execute latest dispatch live');
+        }
+        const result = await res.json();
+        executeLiveStatusEl.textContent = `${result.dispatch.provider_lane_id} -> live completed`;
+        await Promise.all([
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshDistillerStatus(),
+          refreshSecurityStatus(),
+          refreshApprovals(),
+          refreshWorldState(),
+          refreshAutonomyStatus(),
+          refreshTurns(),
+          refreshDispatches(),
+          refreshMemoryCapsules(),
+          refreshSummaries(),
+          refreshPromotions(),
+          refreshContextPacket(),
+          refreshEvents()
+        ]);
+      }
+
+      async function bootstrapCoreCapsule() {
+        bootstrapStatusEl.textContent = 'installing core capsule…';
+        const res = await fetch('/bootstrap/core-capsule', { method: 'POST' });
+        if (!res.ok) {
+          bootstrapStatusEl.textContent = 'bootstrap failed';
+          throw new Error('failed to bootstrap core capsule');
+        }
+        const result = await res.json();
+        bootstrapStatusEl.textContent = `${result.slot_id} -> ${result.slot_state}`;
+        await Promise.all([
+          refreshInventory(),
+          refreshMacroStatus(),
+          refreshControlPlane(),
+          refreshProviderReadiness(),
+          refreshDistillerStatus(),
+          refreshSecurityStatus(),
+          refreshWorldState(),
+          refreshAutonomyStatus(),
+          refreshMandalas(),
+          refreshCapsules(),
+          refreshCapsulePackages(),
+          previewCapsulePackage(result.package_id),
+          refreshSlots(),
+          refreshEvents()
+        ]);
+      }
+
+      async function sealCoreArtifact() {
+        sealStatusEl.textContent = 'sealing fieldvault artifact…';
+        const res = await fetch('/bootstrap/core-artifact', { method: 'POST' });
+        if (!res.ok) {
+          sealStatusEl.textContent = 'seal failed';
+          throw new Error('failed to seal core artifact');
+        }
+        const result = await res.json();
+        sealStatusEl.textContent = `${result.artifact_id} -> ${result.seal_level}`;
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshArtifacts(), refreshEvents()]);
+      }
+
+      async function bootstrapProviderLane() {
+        providerStatusEl.textContent = 'connecting provider lane…';
+        const res = await fetch('/bootstrap/provider-lane', { method: 'POST' });
+        if (!res.ok) {
+          providerStatusEl.textContent = 'provider lane failed';
+          throw new Error('failed to bootstrap provider lane');
+        }
+        const result = await res.json();
+        providerStatusEl.textContent = `${result.provider} -> ${result.model}`;
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+      }
+
+      async function bootstrapAnthropicLane() {
+        providerSecondaryStatusEl.textContent = 'connecting anthropic lane…';
+        const res = await fetch('/bootstrap/provider-lane-anthropic', { method: 'POST' });
+        if (!res.ok) {
+          providerSecondaryStatusEl.textContent = 'anthropic lane failed';
+          throw new Error('failed to bootstrap anthropic lane');
+        }
+        const result = await res.json();
+        providerSecondaryStatusEl.textContent = `${result.provider} -> ${result.model}`;
+        await Promise.all([refreshInventory(), refreshMacroStatus(), refreshControlPlane(), refreshProviderReadiness(), refreshDistillerStatus(), refreshSecurityStatus(), refreshApprovals(), refreshWorldState(), refreshAutonomyStatus(), refreshProviders(), refreshEvents()]);
+      }
+
+      async function bootstrapCopilotLane() {
+        providerCopilotStatusEl.textContent = 'connecting copilot lane…';
+        const res = await fetch('/bootstrap/provider-lane-copilot', { method: 'POST' });
+        if (!res.ok) {
+          providerCopilotStatusEl.textContent = 'copilot lane failed';
+          throw new Error('failed to bootstrap copilot lane');
+        }
+        const result = await res.json();
+        providerCopilotStatusEl.textContent = `${result.provider} -> ${result.model}`;
+        await Promise.all([refreshInventory(), refreshProviders(), refreshEvents()]);
+      }
+
+      function connectEvents() {
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${location.host}/ws/events`);
+        wsStatusEl.textContent = 'ws connected';
+        wsStatusEl.className = 'small status-ok';
+
+        ws.onmessage = (message) => {
+          try {
+            const event = JSON.parse(message.data);
+            state.events.push(event);
+            renderEvents();
+            if (event.event_type === 'session_created') {
+              refreshSessions().catch(console.error);
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshContextPacket().catch(console.error);
+            } else if (event.event_type === 'turn_started') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshTurns().catch(console.error);
+              refreshMemoryCapsules().catch(console.error);
+              refreshSummaries().catch(console.error);
+              refreshPromotions().catch(console.error);
+              refreshContextPacket().catch(console.error);
+            } else if (event.event_type === 'tool_started' || event.event_type === 'message_completed' || event.event_type === 'approval_required' || event.event_type === 'approval_granted' || event.event_type === 'approval_denied') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshTurns().catch(console.error);
+              refreshDispatches().catch(console.error);
+              refreshMemoryCapsules().catch(console.error);
+              refreshSummaries().catch(console.error);
+              refreshPromotions().catch(console.error);
+              refreshContextPacket().catch(console.error);
+            } else if (['mandala_bound', 'capsule_installed', 'slot_activated'].includes(event.event_type)) {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshMandalas().catch(console.error);
+              refreshCapsules().catch(console.error);
+              refreshCapsulePackages().catch(console.error);
+              refreshSlots().catch(console.error);
+            } else if (event.event_type === 'mandala_policy_updated') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshMandalas().catch(console.error);
+              refreshContextPacket().catch(console.error);
+            } else if (event.event_type === 'artifact_created') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshArtifacts().catch(console.error);
+            } else if (event.event_type === 'engine_selected' || event.event_type === 'engine_degraded') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshProviders().catch(console.error);
+              refreshDispatches().catch(console.error);
+            } else if (event.event_type === 'truth_fusion_updated') {
+              refreshInventory().catch(console.error);
+              refreshMacroStatus().catch(console.error);
+              refreshControlPlane().catch(console.error);
+              refreshProviderReadiness().catch(console.error);
+              refreshDistillerStatus().catch(console.error);
+              refreshSecurityStatus().catch(console.error);
+              refreshApprovals().catch(console.error);
+              refreshWorldState().catch(console.error);
+              refreshAutonomyStatus().catch(console.error);
+              refreshMemoryCapsules().catch(console.error);
+              refreshContextPacket().catch(console.error);
+            }
+          } catch (error) {
+            console.error(error);
+          }
+        };
+
+        ws.onclose = () => {
+          wsStatusEl.textContent = 'ws disconnected';
+          wsStatusEl.className = 'small status-error';
+          setTimeout(connectEvents, 1200);
+        };
+
+        ws.onerror = () => {
+          wsStatusEl.textContent = 'ws error';
+          wsStatusEl.className = 'small status-error';
+        };
+      }
+
+      sessionFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const title = sessionTitleEl.value.trim();
+        if (!title) return;
+        try {
+          await createSession(title);
+          sessionTitleEl.value = '';
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
+      turnFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const intentSummary = turnIntentEl.value.trim();
+        if (!intentSummary) return;
+        try {
+          await createTurn(intentSummary);
+          turnIntentEl.value = '';
+        } catch (error) {
+          console.error(error);
+          turnStatusEl.textContent = error.message;
+        }
+      });
+
+      executeDispatchEl.addEventListener('click', async () => {
+        try {
+          await executeLatestDispatch();
+        } catch (error) {
+          console.error(error);
+          executeStatusEl.textContent = error.message;
+        }
+      });
+
+      executeDispatchLiveEl.addEventListener('click', async () => {
+        try {
+          await executeLatestDispatchLive();
+        } catch (error) {
+          console.error(error);
+          executeLiveStatusEl.textContent = error.message;
+        }
+      });
+
+      bootstrapButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapCoreCapsule();
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
+      sealButtonEl.addEventListener('click', async () => {
+        try {
+          await sealCoreArtifact();
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
+      providerButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapProviderLane();
+        } catch (error) {
+          console.error(error);
+          providerStatusEl.textContent = error.message;
+        }
+      });
+
+      providerSecondaryButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapAnthropicLane();
+        } catch (error) {
+          console.error(error);
+          providerSecondaryStatusEl.textContent = error.message;
+        }
+      });
+
+      providerCopilotButtonEl.addEventListener('click', async () => {
+        try {
+          await bootstrapCopilotLane();
+        } catch (error) {
+          console.error(error);
+          providerCopilotStatusEl.textContent = error.message;
+        }
+      });
+
+      // === CHAT WEBSOCKET ===
+      let chatWs = null;
+
+      function connectChat() {
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        chatWs = new WebSocket(`${protocol}//${location.host}/ws/chat`);
+        chatStatusEl.textContent = 'connecting…';
+
+        chatWs.onopen = () => {
+          chatStatusEl.textContent = 'neural link active';
+          chatStatusEl.className = 'small status-ok';
+        };
+
+        chatWs.onclose = () => {
+          chatStatusEl.textContent = 'disconnected — reconnecting…';
+          chatStatusEl.className = 'small status-error';
+          setTimeout(connectChat, 3000);
+        };
+
+        chatWs.onerror = () => {
+          chatStatusEl.textContent = 'connection error';
+          chatStatusEl.className = 'small status-error';
+        };
+
+        chatWs.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            chatTypingEl.style.display = 'none';
+
+            if (data.type === 'ready') {
+              chatStatusEl.textContent = 'neural link active';
+              chatStatusEl.className = 'small status-ok';
+            } else if (data.type === 'typing') {
+              chatTypingEl.style.display = 'block';
+            } else if (data.type === 'message') {
+              appendChatMessage('assistant', data.content, data.provider, data.model);
+              chatInputEl.disabled = false;
+              chatInputEl.focus();
+            } else if (data.type === 'error') {
+              appendChatMessage('error', data.message);
+              chatInputEl.disabled = false;
+            }
+          } catch (err) {
+            console.error('chat parse error', err);
+          }
+        };
+      }
+
+      function appendChatMessage(role, content, provider, model) {
+        const el = document.createElement('div');
+        el.style.cssText = `
+          padding: 14px 16px;
+          border: 1px solid ${role === 'user' ? 'var(--panel-border)' : role === 'error' ? 'rgba(255,17,0,0.3)' : 'rgba(74,0,224,0.3)'};
+          background: ${role === 'user' ? 'rgba(255,255,255,0.03)' : role === 'error' ? 'rgba(255,17,0,0.05)' : 'rgba(74,0,224,0.05)'};
+          font-size: 13px;
+          line-height: 1.6;
+          white-space: pre-wrap;
+          word-break: break-word;
+          position: relative;
+        `;
+        const badge = role === 'user'
+          ? '<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-muted);">OPERATOR</span>'
+          : role === 'error'
+            ? '<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--anti-matter);">ERROR</span>'
+            : `<span style="font-family: Cinzel, serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: var(--resonance);">ANOMALY</span><span style="font-size: 10px; color: var(--text-muted); margin-left: 8px;">${provider || ''} / ${model || ''}</span>`;
+        el.innerHTML = `<div style="margin-bottom: 8px;">${badge}</div>${escapeHtml(content)}`;
+        chatMessagesEl.appendChild(el);
+        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      chatFormEl.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const message = chatInputEl.value.trim();
+        if (!message || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+        appendChatMessage('user', message);
+        chatWs.send(JSON.stringify({ message }));
+        chatInputEl.value = '';
+        chatInputEl.disabled = true;
+        chatTypingEl.style.display = 'block';
+      });
+
+      connectChat();
+
+      memoryPolicyFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          await updateMemoryPolicy();
+        } catch (error) {
+          console.error(error);
+          memoryPolicyStatusEl.textContent = error.message;
+        }
+      });
+
+      memorySearchFormEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          await searchMemory();
+        } catch (error) {
+          console.error(error);
+          memorySearchStatusEl.textContent = error.message;
+        }
+      });
+
+      toggleAutonomyEl.addEventListener('click', async () => {
+        try {
+          await toggleAutonomy();
+        } catch (error) {
+          console.error(error);
+          autonomyStatusLineEl.textContent = error.message;
+        }
+      });
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      renderMemorySearch();
+
+      Promise.all([
+        refreshInventory(),
+        refreshMacroStatus(),
+        refreshControlPlane(),
+        refreshProviderReadiness(),
+        refreshDistillerStatus(),
+        refreshSecurityStatus(),
+        refreshApprovals(),
+        refreshWorldState(),
+        refreshAutonomyStatus(),
+        refreshSessions(),
+        refreshTurns(),
+        refreshDispatches(),
+        refreshMandalas(),
+        refreshCapsules(),
+        refreshCapsulePackages(),
+        refreshSlots(),
+        refreshArtifacts(),
+        refreshProviders(),
+        refreshMemoryCapsules(),
+        refreshSummaries(),
+        refreshPromotions(),
+        refreshContextPacket(),
+        refreshEvents()
+      ])
+        .then(connectEvents)
+        .catch(console.error);
+    </script>
+  </body>
+</html>
+

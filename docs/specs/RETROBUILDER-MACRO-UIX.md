@@ -122,7 +122,7 @@ They should be:
 
 ## Relationship To JIMI
 
-JIMI SUPERSTAR should answer both the micro question and the macro question by default.
+ANOMALY should answer both the micro question and the macro question by default.
 
 Micro:
 - what changed in this run

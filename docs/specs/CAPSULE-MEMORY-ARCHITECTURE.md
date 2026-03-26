@@ -1,7 +1,7 @@
 # JIMI Capsule Memory Architecture
 
 Status: active
-Scope: canonical memory architecture for `JIMI SUPERSTAR`
+Scope: canonical memory architecture for `ANOMALY`
 
 ---
 Protocol: L1GHT/1.0
@@ -12,7 +12,7 @@ Glyph: ⍌
 
 ## Purpose
 
-This document defines how memory should work inside `JIMI SUPERSTAR`.
+This document defines how memory should work inside `ANOMALY`.
 
 It formalizes the capsule-based memory vision as a runtime architecture rather than leaving it as an intuition.
 

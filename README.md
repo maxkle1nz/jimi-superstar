@@ -1,24 +1,24 @@
-# JIMI SUPERSTAR
+# ANOMALY
 
-JIMI SUPERSTAR is the sovereign multi-engine agent house.
+ANOMALY is the sovereign multi-engine agent house.
 
 It is designed to host many engines, import many skill families, expose one coherent operator cockpit, and keep memory, policy, truth, and orchestration owned by the house rather than by any single provider.
 
 The house is now also grounded in two constitutional ideas:
 
-- `RETROBUILDER`: one of the canonical work methods available inside JIMI SUPERSTAR, and the current flagship method for this build
+- `RETROBUILDER`: one of the canonical work methods available inside ANOMALY, and the current flagship method for this build
 - `Mandala + FieldVault`: agent identity, memory, and installable capsules are first-class, not optional add-ons
 - `m1nd OVERVISION`: the host-state and world-state substrate donor for on-demand computer context
 
 ## House Thesis
 
-JIMI SUPERSTAR is not:
+ANOMALY is not:
 
 - a wrapper around one model provider
 - a chat shell with plugins
 - a fork of another agent platform
 
-JIMI SUPERSTAR is:
+ANOMALY is:
 
 - a Rust-first kernel
 - an event-backed runtime
@@ -31,7 +31,7 @@ JIMI SUPERSTAR is:
 
 ## Work Methods
 
-JIMI SUPERSTAR can host and express multiple work methods over time.
+ANOMALY can host and express multiple work methods over time.
 
 RETROBUILDER is one canonical method of work available inside the house, and the one currently driving this system's construction.
 
@@ -48,7 +48,7 @@ and only then scaffold and implement from the center outward.
 
 ## Mandala And FieldVault
 
-JIMI SUPERSTAR should not treat Markdown as the canonical saved form of an agent.
+ANOMALY should not treat Markdown as the canonical saved form of an agent.
 
 The intended direction is:
 
@@ -67,7 +67,7 @@ This makes the house capable of hosting a marketplace of installable agents, eac
 
 ## World State
 
-JIMI SUPERSTAR should not rely on blind prompt stuffing when a task needs real machine context.
+ANOMALY should not rely on blind prompt stuffing when a task needs real machine context.
 
 The intended direction is:
 
@@ -117,10 +117,20 @@ The first implementation slice builds the minimal sovereign kernel:
 
 ## Status
 
-This repository is public and has completed the operational core arc.
+This repository is public. The operational core arc is complete and the brand has been synchronized to **⌜ ⛛ ANOMALY ⌟**.
 
-The next active phase is the platform expansion arc:
+The next active phase is the platform expansion arc (R5):
 
-- capsule runtime
-- installable personalities
-- marketplace shell
+- capsule runtime hardening
+- real `.fld` FieldVault format
+- transcript distiller → AI synthesis
+- chat surface inside the cockpit
+- installable personalities via marketplace
+
+## Agent Continuity
+
+If you are an agent picking up this build, start here:
+
+→ [`docs/specs/RETROBUILDER-HANDOFF.md`](docs/specs/RETROBUILDER-HANDOFF.md)
+
+This document contains the full system state, architecture map, what is done, what is next, and the rules for continuing the build.

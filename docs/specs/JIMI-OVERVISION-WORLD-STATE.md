@@ -1,7 +1,7 @@
 # JIMI OVERVISION World State
 
 Status: active
-Scope: canonical donor integration for host-state and computer-state context inside `JIMI SUPERSTAR`
+Scope: canonical donor integration for host-state and computer-state context inside `ANOMALY`
 
 ---
 Protocol: L1GHT/1.0
@@ -12,7 +12,7 @@ Glyph: ⌬
 
 ## Purpose
 
-This document defines how the `OVERVISION` concept should enter `JIMI SUPERSTAR`.
+This document defines how the `OVERVISION` concept should enter `ANOMALY`.
 
 It does not replace the house.
 
@@ -265,4 +265,4 @@ Do not:
 
 ## Canonical Sentence
 
-Inside JIMI SUPERSTAR, `OVERVISION` is the donor that turns the real computer into an on-demand world-state substrate, while the house remains sovereign over memory, policy, execution, and context assembly.
+Inside ANOMALY, `OVERVISION` is the donor that turns the real computer into an on-demand world-state substrate, while the house remains sovereign over memory, policy, execution, and context assembly.

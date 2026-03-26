@@ -1,6 +1,6 @@
 # Architecture Overview
 
-JIMI SUPERSTAR is organized around these major planes:
+ANOMALY is organized around these major planes:
 
 - Kernel Plane
 - Truth Plane
